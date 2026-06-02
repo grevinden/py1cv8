@@ -6,7 +6,7 @@
   "mcp": {
     "py1cv8": {
       "type": "local",
-      "command": ["python", "-m", "py1cv8", "mcp"],
+      "command": ["py1cv8-mcp"],
       "enabled": true
     }
   }

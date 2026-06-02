@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 py1cv8 = "py1cv8.__main__:main"
+py1cv8-mcp = "py1cv8.mcp_server:run"
 
 [tool.ruff]
 target-version = "py313"
