@@ -1,0 +1,99 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<DataProcessor uuid="11058220-3cb8-4f60-9138-18c8531f8e14">
+		<InternalInfo>
+			<xr:GeneratedType name="DataProcessorObject.Обработка1" category="Object">
+				<xr:TypeId>0b489b6b-f8c8-438c-b12e-7db0291f8ed5</xr:TypeId>
+				<xr:ValueId>89aa3570-1c9f-4839-953e-ac33b1e3b263</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="DataProcessorManager.Обработка1" category="Manager">
+				<xr:TypeId>8d525041-a556-4cdb-a3bf-594e961c759a</xr:TypeId>
+				<xr:ValueId>4160889f-3634-420c-8dd1-e27a91162578</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<Name>Обработка1</Name>
+			<Synonym/>
+			<Comment/>
+			<UseStandardCommands>true</UseStandardCommands>
+			<DefaultForm>DataProcessor.Обработка1.Form.Форма</DefaultForm>
+			<AuxiliaryForm/>
+			<IncludeHelpInContents>false</IncludeHelpInContents>
+			<ExtendedPresentation/>
+			<Explanation/>
+		</Properties>
+		<ChildObjects>
+			<Attribute uuid="6835c1fd-c466-463e-8c11-080839000dfa">
+				<Properties>
+					<Name>Реквизит1</Name>
+					<Synonym/>
+					<Comment/>
+					<Type>
+						<v8:Type>xs:string</v8:Type>
+						<v8:StringQualifiers>
+							<v8:Length>10</v8:Length>
+							<v8:AllowedLength>Variable</v8:AllowedLength>
+						</v8:StringQualifiers>
+					</Type>
+					<PasswordMode>false</PasswordMode>
+					<Format/>
+					<EditFormat/>
+					<ToolTip/>
+					<MarkNegatives>false</MarkNegatives>
+					<Mask/>
+					<MultiLine>false</MultiLine>
+					<ExtendedEdit>false</ExtendedEdit>
+					<MinValue xsi:nil="true"/>
+					<MaxValue xsi:nil="true"/>
+					<FillChecking>DontCheck</FillChecking>
+					<ChoiceFoldersAndItems>Items</ChoiceFoldersAndItems>
+					<ChoiceParameterLinks/>
+					<ChoiceParameters/>
+					<QuickChoice>Auto</QuickChoice>
+					<CreateOnInput>Auto</CreateOnInput>
+					<ChoiceForm/>
+					<LinkByType/>
+					<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
+				</Properties>
+			</Attribute>
+			<TabularSection uuid="486e8745-d55b-4503-8691-c69c8f52008f">
+				<InternalInfo>
+					<xr:GeneratedType name="DataProcessorTabularSection.Обработка1.ТабличнаяЧасть1" category="TabularSection">
+						<xr:TypeId>b39470a1-9717-4a5f-b7bf-2a53703b57b5</xr:TypeId>
+						<xr:ValueId>dad13156-8b9e-486a-bda6-386ca74d851e</xr:ValueId>
+					</xr:GeneratedType>
+					<xr:GeneratedType name="DataProcessorTabularSectionRow.Обработка1.ТабличнаяЧасть1" category="TabularSectionRow">
+						<xr:TypeId>a4c32184-ec4e-4b58-a43c-efc5c06ccfb0</xr:TypeId>
+						<xr:ValueId>b6253ecf-7fbe-41e0-8d5a-592f55901948</xr:ValueId>
+					</xr:GeneratedType>
+				</InternalInfo>
+				<Properties>
+					<Name>ТабличнаяЧасть1</Name>
+					<Synonym/>
+					<Comment/>
+					<ToolTip/>
+					<FillChecking>DontCheck</FillChecking>
+				</Properties>
+				<ChildObjects/>
+			</TabularSection>
+			<Form>Форма</Form>
+			<Template>Макет</Template>
+			<Command uuid="32bca652-5c26-49c3-80f4-dc6ae55f5476">
+				<Properties>
+					<Name>Команда1</Name>
+					<Synonym/>
+					<Comment/>
+					<Group>ActionsPanelCreate</Group>
+					<CommandParameterType/>
+					<ParameterUseMode>Single</ParameterUseMode>
+					<ModifiesData>false</ModifiesData>
+					<Representation>Auto</Representation>
+					<ToolTip/>
+					<Picture/>
+					<Shortcut/>
+					<OnMainServerUnavalableBehavior>Auto</OnMainServerUnavalableBehavior>
+				</Properties>
+			</Command>
+		</ChildObjects>
+	</DataProcessor>
+</MetaDataObject>

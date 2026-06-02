@@ -1,0 +1,63 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<Enum uuid="b3c795f6-b149-4c42-91dc-e7c3cb5a7446">
+		<InternalInfo>
+			<xr:GeneratedType name="EnumRef.Перечисление1" category="Ref">
+				<xr:TypeId>e9693a20-431c-4785-b34e-fa839aa37362</xr:TypeId>
+				<xr:ValueId>33cc3d18-5a91-4e42-910b-cde0bd2834dc</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="EnumManager.Перечисление1" category="Manager">
+				<xr:TypeId>cb020b2c-7c4a-465f-b591-0fd36f14f245</xr:TypeId>
+				<xr:ValueId>d4f28f2e-eed7-4522-807e-9648336a6505</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="EnumList.Перечисление1" category="List">
+				<xr:TypeId>f9de2899-885a-499f-bc4e-78fb7904107f</xr:TypeId>
+				<xr:ValueId>7788028f-cebe-464f-a720-107cff850127</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<Name>Перечисление1</Name>
+			<Synonym/>
+			<Comment/>
+			<UseStandardCommands>true</UseStandardCommands>
+			<Characteristics/>
+			<QuickChoice>true</QuickChoice>
+			<ChoiceMode>BothWays</ChoiceMode>
+			<DefaultListForm>Enum.Перечисление1.Form.ФормаСписка</DefaultListForm>
+			<DefaultChoiceForm/>
+			<AuxiliaryListForm/>
+			<AuxiliaryChoiceForm/>
+			<ListPresentation/>
+			<ExtendedListPresentation/>
+			<Explanation/>
+			<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
+		</Properties>
+		<ChildObjects>
+			<EnumValue uuid="b9d32c80-6632-4523-b42d-a039b21c5f39">
+				<Properties>
+					<Name>ЗначениеПеречисления1</Name>
+					<Synonym/>
+					<Comment/>
+				</Properties>
+			</EnumValue>
+			<Form>ФормаСписка</Form>
+			<Template>Макет</Template>
+			<Command uuid="dcdeddd8-5576-40b2-bb61-a98493db2cd1">
+				<Properties>
+					<Name>Команда1</Name>
+					<Synonym/>
+					<Comment/>
+					<Group>NavigationPanelSeeAlso</Group>
+					<CommandParameterType/>
+					<ParameterUseMode>Single</ParameterUseMode>
+					<ModifiesData>false</ModifiesData>
+					<Representation>Auto</Representation>
+					<ToolTip/>
+					<Picture/>
+					<Shortcut/>
+					<OnMainServerUnavalableBehavior>Auto</OnMainServerUnavalableBehavior>
+				</Properties>
+			</Command>
+		</ChildObjects>
+	</Enum>
+</MetaDataObject>
