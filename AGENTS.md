@@ -11,12 +11,11 @@
 
 ### Ключевые слои архитектуры
 
-1. **BSL extraction** — чтение config/configcas, декомпрессия, извлечение BSL-кода
-2. **Schema discovery** — информация о всех таблицах 1С через `information_schema.columns`
-3. **Metadata mapping** — маппинг DBNames → 1C-типы объектов (type_num из блобов)
-4. **Relationship graph** — граф связей между объектами (Ref → Owner, Parent, и т.д.)
-5. **Type bridge** — конвертация 1С-типов в SQL-типы в понятное LLM описание
-6. **MCP-сервер** — точка входа для нейросети: tools/resources для query, schema, metadata
+1. **Schema discovery** — информация о всех таблицах 1С через `information_schema.columns`
+2. **Metadata mapping** — маппинг DBNames → 1C-типы объектов (type_num из блобов)
+3. **Relationship graph** — граф связей между объектами (Ref → Owner, Parent, и т.д.)
+4. **Type bridge** — конвертация 1С-типов в SQL-типы в понятное LLM описание
+5. **MCP-сервер** — точка входа для нейросети: tools/resources для query, schema, metadata
 
 ### Модульная архитектура (SRP)
 
@@ -26,18 +25,15 @@
 src/py1cv8/
 ├── config.py            # Константы: DB credentials, TYPE_MAP, пути, naming rules
 ├── db.py                # Подключение к БД (read-only)
-├── compress.py          # zlib-декомпрессия, детекция кодировок, BOM-сплит, BSL-блоки
+├── compress.py          # zlib-декомпрессия, детекция кодировок, BOM-сплит
 ├── bsl.py               # Детекция BSL-ключевых слов, извлечение имени из кода
 ├── metadata_binary.py   # Парсинг {1,\n{type} блобов config, MOXCEL-заголовки
 ├── metadata_xml.py      # Парсер XML-метаданных .export_from_1c/ (модели, Type Bridge)
-├── filesystem.py        # Запись файлов, checkpoint, sanitize имён
-├── extract_pipeline.py  # Оркестратор BSL-извлечения (main)
 ├── dbnames.py           # DBNames-парсинг, генерация имён таблиц
 ├── relationships.py     # Граф связей между таблицами по RRef/RTRef/Owner/Parent
 ├── schema.py            # SchemaRegistry + SchemaLoader (оркестрация discovery)
-├── mcp_server.py        # MCP-сервер: 5 tools (get_db_overview, run_sql, get_schema, search_metadata, analyze_object) + resources через stdio
+├── mcp_server.py        # MCP-сервер: 5 tools + resources через stdio
 ├── bootstrap.py         # DI-контейнер: create_schema_loader, create_registry
-├── extract.py           # ФАСАД — реэкспорт для обратной совместимости (legacy)
 └── __main__.py          # Точка входа: диспетчеризация по командам
 ```
 
@@ -48,11 +44,9 @@ src/py1cv8/
 
 ### Запуск
 ```bash
-python -m py1cv8              # BSL extraction (legacy)
 python -m py1cv8 mcp          # MCP-сервер для LLM
 python -m py1cv8 schema [db]  # Сводка схемы БД
-python extract_prod.py        # Альтернативный вход (backward compat)
-python -m pytest tests/       # 93 теста
+python -m pytest tests/       # 83 теста
 python -m ruff check src/py1cv8/
 python -m mypy src/py1cv8/
 ```
@@ -196,8 +190,7 @@ python -m mypy src/py1cv8/
 1. Если функция использует import из другого домена (psycopg2, zlib, json, os) — она должна быть в отдельном модуле, названном по домену.
 2. Новую фичу клади в **новый модуль**, даже если он маленький. Не дописывай в существующий, если это расширяет его ответственность.
 3. Если модуль стал >300 строк — разбей. Один файл = одна тема.
-4. `extract.py` и `extract_prod.py` — только реэкспорт (фасады). Вся логика в SRP-модулях.
-5. Импорты через конкретные модули, а не через фасады (кроме тестов — там можно через фасад для backward compat).
+4. Импорты через конкретные модули, а не через фасады.
 
 ---
 

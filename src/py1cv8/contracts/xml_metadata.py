@@ -1,4 +1,4 @@
-"""XML metadata provider contract — reading .export_from_1c/ XML exports."""
+"""XML metadata provider contract — reading .staff/.export_from_1c/ XML exports."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from py1cv8.metadata_xml import ObjectMetadata
 
 @runtime_checkable
 class XmlMetadataProvider(Protocol):
-    """Scans and parses .export_from_1c/ XML metadata directories."""
+    """Scans and parses .staff/.export_from_1c/ XML metadata directories."""
 
     def scan_export_directory(
         self,

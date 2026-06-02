@@ -7,7 +7,13 @@ import json
 import pytest
 
 from py1cv8.bootstrap import create_schema_loader
-from py1cv8.mcp_server import _analyze_object, _build_db_overview, _get_schema, _run_sql, _search_metadata
+from py1cv8.mcp_server import (
+    _analyze_object,
+    _build_db_overview,
+    _get_schema,
+    _run_sql,
+    _search_metadata,
+)
 from py1cv8.schema import ObjectInfo
 
 # Discover a real ObjectInfo main table for the test DB
@@ -17,7 +23,8 @@ TEST_TABLE = next(
     (t for t, i in _reg.tables.items() if isinstance(i, ObjectInfo)),
     "_reference53",
 )
-TECH_NAME = _reg.tables[TEST_TABLE].tech_name if isinstance(_reg.tables[TEST_TABLE], ObjectInfo) else TEST_TABLE
+_test_tbl_info = _reg.tables[TEST_TABLE]
+TECH_NAME = _test_tbl_info.tech_name if isinstance(_test_tbl_info, ObjectInfo) else TEST_TABLE
 
 
 @pytest.fixture(autouse=True)
@@ -40,7 +47,7 @@ def test_db_overview() -> None:
     assert result["total_tables"] > 0
     assert "entity_types" in result
     # Verify at least one entity type has the right structure
-    for cat, info in result["entity_types"].items():
+    for _cat, info in result["entity_types"].items():
         assert "count" in info
         assert "description" in info
         assert "objects" in info
@@ -166,5 +173,5 @@ async def test_query_with_limit() -> None:
 
 @pytest.mark.asyncio
 async def test_schema_invalid_db() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(Exception, match=r"Unknown database|could not translate|does not exist"):
         await _get_schema("invalid_db", {})

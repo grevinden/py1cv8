@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from py1cv8.db import PgDatabaseProvider
 from py1cv8.dbnames import DBNamesProviderImpl
-from py1cv8.filesystem import FileSystemProviderImpl
 from py1cv8.metadata_binary import ConfigMetadataProvider
 from py1cv8.metadata_xml import XmlMetadataProviderImpl
 from py1cv8.relationships import RelationshipBuilderImpl
@@ -26,7 +25,6 @@ class _Providers:
         self._xml: XmlMetadataProviderImpl | None = None
         self._dbnames: DBNamesProviderImpl | None = None
         self._rels: RelationshipBuilderImpl | None = None
-        self._fs: FileSystemProviderImpl | None = None
 
     @property
     def db(self) -> PgDatabaseProvider:
@@ -59,12 +57,6 @@ class _Providers:
             self._rels = RelationshipBuilderImpl()
         return self._rels
 
-    @property
-    def fs(self) -> FileSystemProviderImpl:
-        if self._fs is None:
-            self._fs = FileSystemProviderImpl()
-        return self._fs
-
 
 _providers = _Providers()
 
@@ -92,21 +84,6 @@ def run_mcp() -> None:
     """Run the MCP server with DI-wired schema loader."""
     from py1cv8.mcp_server import run
     run(schema_loader=create_schema_loader())
-
-
-def run_extraction_pipeline(
-    config_db: str = "MessageCenter",
-    configcas_db: str | None = None,
-) -> None:
-    """Run the extraction pipeline with DI-wired providers."""
-    from py1cv8.extract_pipeline import ExtractionPipelineImpl
-
-    pipeline = ExtractionPipelineImpl(
-        db_provider=_providers.db,
-        metadata_provider=_providers.metadata,
-        fs_provider=_providers.fs,
-    )
-    pipeline.run(config_db=config_db, configcas_db=configcas_db)
 
 
 def run_schema_summary(dbname: str) -> dict:

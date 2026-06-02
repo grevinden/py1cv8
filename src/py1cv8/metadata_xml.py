@@ -1,4 +1,4 @@
-"""Parse 1C metadata XML export (.export_from_1c/) into structured models.
+"""Parse 1C metadata XML export (.staff/.export_from_1c/) into structured models.
 
 Reads the XML files produced by 1C:Enterprise config dump (ConfigDumpInfo format),
 extracts Properties, ChildObjects (attributes, tabular sections, forms, commands, etc.),
@@ -593,7 +593,7 @@ def scan_export_directory(export_dir: str | os.PathLike = EXPORT_DIR) -> dict[st
 
 
 class XmlMetadataProviderImpl:
-    """Scans .export_from_1c/ directories and parses XML metadata.
+    """Scans .staff/.export_from_1c/ directories and parses XML metadata.
 
     Satisfies: contracts.xml_metadata.XmlMetadataProvider
     """

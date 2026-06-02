@@ -11,11 +11,8 @@ DB_PORT: int = 5433
 DB_USER: str = "postgres"
 DB_PASS: str = "qwaseD12"
 
-# ── Output paths ───────────────────────────────────────────────────────────
-
-OUT_DIR: str = r"B:\py1cv8\modules_prod_clean"
-CHECKPOINT_PATH: str = r"B:\py1cv8\.extraction_checkpoint.json"
-EXPORT_DIR: Path = Path(r"B:\py1cv8\.export_from_1c")
+HERE: Path = Path(__file__).resolve().parent.parent.parent
+EXPORT_DIR: Path = HERE / ".staff" / ".export_from_1c"
 
 # ── Type map: type_num → category (from 1C binary config blobs) ────────────
 #

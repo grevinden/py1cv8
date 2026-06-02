@@ -10,10 +10,11 @@ dependencies = [
     "chardet>=5.2",
     "asyncpg>=0.31",
     "mcp>=1.27",
+    "typer>=0.15",
 ]
 
 [project.scripts]
-py1cv8 = "py1cv8.__main__:main"
+py1cv8 = "py1cv8.cli:app"
 py1cv8-mcp = "py1cv8.mcp_server:run"
 
 [tool.ruff]
