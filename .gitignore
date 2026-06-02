@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Project temp / output
+modules_prod_clean/
+modules_cas_clean/
+modules_mc/
+modules_test/
+modules_v3/
+*.json
+!opencode.json
+!pyproject.json
+!prod_extraction_mapping.json
+data/
+*.txt
+*.bin
+
+# Diagnostic scripts (one-off research)
+diag_*.py
+analyze_*.py
+check_*.py
+debug_*.py
+decode_*.py
+deep_*.py
+dump_*.py
+extract_*.py
+!extract_prod.py
+fix_*.py
+inspect_*.py
+list_*.py
+map_*.py
+parse_*.py
+preview_*.py
+read_*.py
+scan_*.py
+show_*.py
+
+# Root-level misc
+main.py
+test_decode.py
+test_decompress.py
+cleanup_*.py
+final_summary.py
+validate_reference.py
+build_names_tree.py
+html_diag*.txt
