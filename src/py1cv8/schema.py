@@ -1,23 +1,25 @@
 """Schema discovery — lazy reflection of 1C databases.
 
 Orchestrates DBNames parsing, information_schema queries, config metadata,
-and XML metadata into a unified SchemaRegistry.
+and XML metadata into a unified SchemaRegistry — all via SQLAlchemy ORM.
+
+Depends ONLY on contracts (contracts.*), NOT on concrete implementations.
+Dependencies are injected via constructor. Defaults use module-level bootstrap
+for backward compatibility.
 """
 
 from __future__ import annotations
 
-import zlib
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
-import psycopg2
-import psycopg2.extras
+from sqlalchemy import select
 
 from py1cv8.config import (
-    DB_HOST,
-    DB_PASS,
-    DB_PORT,
-    DB_USER,
+    COMPANION_TABLE_PARENT,
+    COMPANION_TABLE_TYPES,
     DBNAMES_CATEGORY_MAP,
     EXPORT_DIR,
     MAIN_TABLE_TYPES,
@@ -25,10 +27,74 @@ from py1cv8.config import (
     SUB_TABLE_TYPES,
     TYPE_MAP,
 )
+from py1cv8.contracts.database import DatabaseSessionProvider
+from py1cv8.contracts.dbnames import DBNamesProvider
+from py1cv8.contracts.metadata import MetadataProvider
+from py1cv8.contracts.relationships import RelationshipBuilder
+from py1cv8.contracts.xml_metadata import XmlMetadataProvider as XmlMetadataProviderContract
 from py1cv8.dbnames import DBNamesEntry, generate_db_name, parse_dbnames_text
-from py1cv8.metadata_binary import build_metadata_map
-from py1cv8.metadata_xml import ObjectMetadata, scan_export_directory
-from py1cv8.relationships import build_relationships
+
+if False:
+    pass
+from py1cv8.models import (
+    InformationSchemaColumn,
+    InformationSchemaKeyColumnUsage,
+    InformationSchemaTableConstraint,
+    Params,
+)
+
+# ── Default provider factories (lazy, for backward compat) ───────────────
+
+
+def _default_db_provider() -> DatabaseSessionProvider:
+    from py1cv8.db import PgDatabaseProvider
+    return PgDatabaseProvider()
+
+
+def _default_metadata_provider() -> MetadataProvider:
+    from py1cv8.metadata_binary import ConfigMetadataProvider
+    return ConfigMetadataProvider(_default_db_provider())
+
+
+def _default_xml_provider() -> XmlMetadataProviderContract:
+    from py1cv8.metadata_xml import XmlMetadataProviderImpl
+    return XmlMetadataProviderImpl()
+
+
+def _default_dbnames_provider() -> DBNamesProvider:
+    from py1cv8.dbnames import DBNamesProviderImpl
+    return DBNamesProviderImpl()
+
+
+def _default_relationship_builder() -> RelationshipBuilder:
+    from py1cv8.relationships import build_relationships
+
+    class _Builder:
+        """Adapter: wraps module-level build_relationships as a RelationshipBuilder."""
+        def build_relationships(
+            self,
+            tables: Mapping[str, object],
+            entries: list[dict],
+            main_types: frozenset[str],
+        ) -> dict[str, list[dict]]:
+            from py1cv8.schema import ObjectInfo, ServiceTableInfo
+            typed_tables: dict[str, ObjectInfo | ServiceTableInfo] = {
+                k: v for k, v in tables.items()
+                if isinstance(v, (ObjectInfo, ServiceTableInfo))
+            }
+            from py1cv8.dbnames import DBNamesEntry
+            parsed_entries: list[DBNamesEntry] = [
+                e if isinstance(e, DBNamesEntry) else DBNamesEntry(
+                    uuid=e.get("uuid", ""),
+                    type_name=e.get("type_name", ""),
+                    number=e.get("number", 0),
+                )
+                for e in entries
+            ]
+            return build_relationships(typed_tables, parsed_entries, main_types)
+
+    return _Builder()
+
 
 # ── Models ──────────────────────────────────────────────────────────────
 
@@ -56,7 +122,7 @@ class ObjectInfo:
     columns: list[ColumnInfo] = field(default_factory=list)
     sub_tables: dict[str, str] = field(default_factory=dict)
     referenced_by: list[str] = field(default_factory=list)
-    metadata_xml: ObjectMetadata | None = None
+    metadata_xml: Any | None = None  # ObjectMetadata | None
 
 
 @dataclass
@@ -68,76 +134,119 @@ class ServiceTableInfo:
     columns: list[ColumnInfo] = field(default_factory=list)
 
 
+# ── Schema reader helpers ────────────────────────────────────────────────
+
+
+def _read_information_schema(
+    db_provider: DatabaseSessionProvider,
+    dbname: str,
+) -> dict[str, list[ColumnInfo]]:
+    """Read all _* table columns from information_schema via ORM."""
+    with db_provider.session_scope(dbname) as session:
+        cols_q = select(InformationSchemaColumn).where(
+            InformationSchemaColumn.table_name.startswith("_", autoescape=True),
+            InformationSchemaColumn.table_schema == "public",
+        ).order_by(
+            InformationSchemaColumn.table_name,
+            InformationSchemaColumn.ordinal_position,
+        )
+        all_cols = session.scalars(cols_q).all()
+
+        tables: dict[str, list[ColumnInfo]] = {}
+        for row in all_cols:
+            tname = row.table_name
+            if tname not in tables:
+                tables[tname] = []
+            tables[tname].append(ColumnInfo(
+                name=row.column_name,
+                data_type=row.data_type or "unknown",
+                nullable=row.is_nullable == "YES",
+                is_pk=False,
+                ordinal=row.ordinal_position,
+            ))
+
+        try:
+            pk_q = (
+                select(
+                    InformationSchemaKeyColumnUsage.table_name,
+                    InformationSchemaKeyColumnUsage.column_name,
+                )
+                .join(
+                    InformationSchemaTableConstraint,
+                    InformationSchemaTableConstraint.constraint_name
+                    == InformationSchemaKeyColumnUsage.constraint_name,
+                )
+                .where(
+                    InformationSchemaTableConstraint.constraint_type == "PRIMARY KEY",
+                    InformationSchemaTableConstraint.table_schema == "public",
+                    InformationSchemaKeyColumnUsage.table_schema == "public",
+                    InformationSchemaKeyColumnUsage.table_name.startswith("_", autoescape=True),
+                )
+            )
+            pk_rows = session.execute(pk_q).all()
+            pk_cols: dict[str, set[str]] = defaultdict(set)
+            for pk_row in pk_rows:
+                pk_cols[pk_row.table_name].add(pk_row.column_name)
+            for tname, cols in tables.items():
+                for col in cols:
+                    if col.name in pk_cols.get(tname, set()):
+                        col.is_pk = True
+        except Exception:
+            pass
+
+        return tables
+
+
+def _read_dbnames(
+    db_provider: DatabaseSessionProvider,
+    dbname: str,
+) -> list[DBNamesEntry]:
+    """Read DBNames from params table via ORM."""
+    with db_provider.session_scope(dbname) as session:
+        q = select(Params).where(
+            (Params.filename == "DBNames") | Params.filename.like("DBNames-Ext%"),
+        ).order_by(Params.filename)
+
+        all_entries: list[DBNamesEntry] = []
+        for row in session.scalars(q):
+            if not row.binarydata:
+                continue
+            import zlib
+            try:
+                dec = zlib.decompress(bytes(row.binarydata), -15)
+            except zlib.error:
+                continue
+            text = dec.decode("utf-8-sig", errors="replace")
+            all_entries.extend(parse_dbnames_text(text))
+        return all_entries
+
+
 # ── Schema registry ─────────────────────────────────────────────────────
 
 
-def _read_information_schema(dbname: str) -> dict[str, list[ColumnInfo]]:
-    """Read all _* table columns from information_schema."""
-    conn = psycopg2.connect(
-        host=DB_HOST, port=DB_PORT, dbname=dbname,
-        user=DB_USER, password=DB_PASS,
-    )
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-    cur.execute(
-        "SELECT table_name, column_name, data_type, "
-        "       is_nullable, ordinal_position "
-        "FROM information_schema.columns "
-        "WHERE table_schema = 'public' "
-        "AND table_name LIKE '\\_%' "
-        "ORDER BY table_name, ordinal_position"
-    )
-
-    tables: dict[str, list[ColumnInfo]] = {}
-    for row in cur.fetchall():
-        tname = row["table_name"]
-        if tname not in tables:
-            tables[tname] = []
-        tables[tname].append(ColumnInfo(
-            name=row["column_name"],
-            data_type=row["data_type"],
-            nullable=row["is_nullable"] == "YES",
-            is_pk=False,
-            ordinal=row["ordinal_position"],
-        ))
-
-    try:
-        cur.execute(
-            "SELECT kcu.table_name, kcu.column_name "
-            "FROM information_schema.table_constraints tc "
-            "JOIN information_schema.key_column_usage kcu "
-            "  ON tc.constraint_name = kcu.constraint_name "
-            "WHERE tc.constraint_type = 'PRIMARY KEY' "
-            "AND tc.table_schema = 'public' "
-            "AND tc.table_name LIKE '\\_%'"
-        )
-        pk_cols: dict[str, set[str]] = defaultdict(set)
-        for row in cur.fetchall():
-            pk_cols[row["table_name"]].add(row["column_name"])
-        for tname, cols in tables.items():
-            for col in cols:
-                if col.name in pk_cols.get(tname, set()):
-                    col.is_pk = True
-    except Exception:
-        pass
-
-    cur.close()
-    conn.close()
-    return tables
-
-
-def _read_config_metadata(dbname: str) -> dict[str, dict]:
-    try:
-        return build_metadata_map(dbname)
-    except Exception:
-        return {}
-
-
 class SchemaRegistry:
-    """Lazy-loaded schema registry for a 1C database."""
+    """Lazy-loaded schema registry for a 1C database.
 
-    def __init__(self, dbname: str) -> None:
+    Depends on injected providers that satisfy contracts.
+    If providers are not injected, defaults are used (backward compat).
+    """
+
+    def __init__(
+        self,
+        dbname: str,
+        *,
+        db_provider: DatabaseSessionProvider | None = None,
+        metadata_provider: MetadataProvider | None = None,
+        xml_provider: XmlMetadataProviderContract | None = None,
+        dbnames_provider: DBNamesProvider | None = None,
+        relationship_builder: RelationshipBuilder | None = None,
+    ) -> None:
         self.dbname = dbname
+        self._db = db_provider or _default_db_provider()
+        self._meta = metadata_provider or _default_metadata_provider()
+        self._xml = xml_provider or _default_xml_provider()
+        self._dbnames = dbnames_provider or _default_dbnames_provider()
+        self._rels = relationship_builder or _default_relationship_builder()
         self._loaded = False
         self.objects: dict[str, ObjectInfo] = {}
         self.tables: dict[str, ObjectInfo | ServiceTableInfo] = {}
@@ -151,47 +260,27 @@ class SchemaRegistry:
         self._do_load()
 
     def _do_load(self) -> None:
-        # 1. Read DBNames from params table
-        conn = psycopg2.connect(
-            host=DB_HOST, port=DB_PORT, dbname=self.dbname,
-            user=DB_USER, password=DB_PASS,
-        )
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT filename, binarydata FROM params "
-            "WHERE filename = 'DBNames' OR filename LIKE 'DBNames-Ext%' "
-            "ORDER BY filename"
-        )
-
-        all_entries: list[DBNamesEntry] = []
-        for _fname, raw in cur.fetchall():
-            if not raw:
-                continue
-            try:
-                dec = zlib.decompress(bytes(raw), -15)
-            except zlib.error:
-                continue
-            text = dec.decode("utf-8-sig", errors="replace")
-            all_entries.extend(parse_dbnames_text(text))
-        cur.close()
-        conn.close()
-
+        # 1. Read DBNames via injected DB provider
+        all_entries = _read_dbnames(self._db, self.dbname)
         self.dbnames_entries = all_entries
 
-        # 2. Read information_schema
-        all_columns = _read_information_schema(self.dbname)
+        # 2. Read information_schema via injected DB provider
+        all_columns = _read_information_schema(self._db, self.dbname)
 
-        # 3. Read config metadata
-        meta_map = _read_config_metadata(self.dbname)
+        # 3. Read config metadata via injected metadata provider
+        meta_map = self._meta.build_metadata_map(self.dbname)
 
-        # 4. Index DBNames entries
+        # 4. Index DBNames entries (4-way classification)
         main_entries: list[DBNamesEntry] = []
         sub_entries: list[DBNamesEntry] = []
+        companion_entries: list[DBNamesEntry] = []
         service_entries: list[DBNamesEntry] = []
 
         for entry in all_entries:
             if entry.type_name in SUB_TABLE_TYPES:
                 sub_entries.append(entry)
+            elif entry.type_name in COMPANION_TABLE_TYPES:
+                companion_entries.append(entry)
             elif (
                 entry.type_name in SERVICE_TABLE_TYPES
                 or entry.uuid == "00000000-0000-0000-0000-000000000000"
@@ -258,8 +347,56 @@ class SchemaRegistry:
                     )
                     self.tables[sub_db_name] = sub_obj
 
+            # Link companion tables with the same UUID
+            uuid_comp = [e for e in companion_entries if e.uuid == uuid_val]
+            seen_comp_numbers: set[int] = set()
+            for comp in uuid_comp:
+                if comp.number in seen_comp_numbers:
+                    continue
+                seen_comp_numbers.add(comp.number)
+                comp_parent = COMPANION_TABLE_PARENT.get(comp.type_name, entry.type_name)
+                if comp_parent != entry.type_name:
+                    continue
+                comp_db_name = generate_db_name(comp)
+                if comp_db_name and comp_db_name in all_columns:
+                    obj.sub_tables[comp.type_name] = comp_db_name
+                    comp_obj = ObjectInfo(
+                        uuid=uuid_val,
+                        tech_name=f"{obj.tech_name}.{comp.type_name}",
+                        display_ru=f"{obj.display_ru} ({comp.type_name})",
+                        type_num=type_num,
+                        category=f"{category}.{comp.type_name}",
+                        main_table=comp_db_name,
+                        table_number=comp.number,
+                        columns=all_columns[comp_db_name],
+                    )
+                    self.tables[comp_db_name] = comp_obj
+
             self.objects[uuid_val] = obj
             self.tables[db_name] = obj
+
+        # 6b. Process companion entries that DON'T share a UUID with a main entry
+        for comp in companion_entries:
+            if comp.uuid in uuid_main:
+                continue
+            comp_db_name = generate_db_name(comp)
+            if comp_db_name is None or comp_db_name not in all_columns:
+                continue
+            if comp_db_name in self.tables:
+                continue
+            comp_parent = COMPANION_TABLE_PARENT.get(comp.type_name, "")
+            obj = ObjectInfo(
+                uuid=comp.uuid,
+                tech_name=f"{comp.type_name}_{comp.number}",
+                display_ru=f"{comp.type_name}_{comp.number}",
+                type_num=None,
+                category=DBNAMES_CATEGORY_MAP.get(comp_parent, comp_parent or comp.type_name),
+                main_table=comp_db_name,
+                table_number=comp.number,
+                columns=all_columns[comp_db_name],
+            )
+            self.objects[comp.uuid] = obj
+            self.tables[comp_db_name] = obj
 
         # 7. Build service table entries
         for entry in service_entries:
@@ -288,7 +425,7 @@ class SchemaRegistry:
         # 9. Link XML export metadata
         if EXPORT_DIR.is_dir():
             try:
-                xml_meta = scan_export_directory()
+                xml_meta = self._xml.scan_export_directory()
                 for obj in self.objects.values():
                     xm = xml_meta.get(obj.uuid)
                     if xm is not None:
@@ -296,9 +433,20 @@ class SchemaRegistry:
             except Exception:
                 pass
 
+        # 9b. Update display_ru from XML synonym if available
+        for obj in self.objects.values():
+            if obj.metadata_xml and obj.metadata_xml.synonym:
+                ru = obj.metadata_xml.synonym.get("ru")
+                if ru:
+                    obj.display_ru = ru
+
         # 10. Build relationship graph
-        self.relationships = build_relationships(
-            self.tables, self.dbnames_entries, MAIN_TABLE_TYPES,
+        entries_as_dicts = [
+            {"uuid": e.uuid, "type_name": e.type_name, "number": e.number}
+            for e in self.dbnames_entries
+        ]
+        self.relationships = self._rels.build_relationships(
+            self.tables, entries_as_dicts, MAIN_TABLE_TYPES,
         )
 
     # ── Public accessors ────────────────────────────────────────────────
@@ -363,12 +511,32 @@ class SchemaRegistry:
 class SchemaLoader:
     """Lazy singleton for schema registries across databases."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        db_provider: DatabaseSessionProvider | None = None,
+        metadata_provider: MetadataProvider | None = None,
+        xml_provider: XmlMetadataProviderContract | None = None,
+        dbnames_provider: DBNamesProvider | None = None,
+        relationship_builder: RelationshipBuilder | None = None,
+    ) -> None:
+        self._db_provider = db_provider
+        self._metadata_provider = metadata_provider
+        self._xml_provider = xml_provider
+        self._dbnames_provider = dbnames_provider
+        self._relationship_builder = relationship_builder
         self._registries: dict[str, SchemaRegistry] = {}
 
     def __call__(self, dbname: str) -> SchemaRegistry:
         if dbname not in self._registries:
-            reg = SchemaRegistry(dbname)
+            reg = SchemaRegistry(
+                dbname,
+                db_provider=self._db_provider,
+                metadata_provider=self._metadata_provider,
+                xml_provider=self._xml_provider,
+                dbnames_provider=self._dbnames_provider,
+                relationship_builder=self._relationship_builder,
+            )
             reg.lazy_load()
             self._registries[dbname] = reg
         return self._registries[dbname]

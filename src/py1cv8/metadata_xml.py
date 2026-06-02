@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
-EXPORT_DIR = Path(r"B:\py1cv8\.export_from_1c")
+from py1cv8.config import EXPORT_DIR
 
 # Directory name -> 1C type_name (as used in DBNames)
 DIR_TO_TYPE: dict[str, str] = {
@@ -42,6 +42,13 @@ DIR_TO_TYPE: dict[str, str] = {
     "Styles": "Style",
     "WebSocketClients": "WebSocketClient",
     "Ext": "Ext",
+    "AccumulationRegisters": "AccumulationRegister",
+    "AccountingRegisters": "AccountingRegister",
+    "CalculationRegisters": "CalculationRegister",
+    "ExternalDataProcessors": "ExternalDataProcessor",
+    "ExternalDataSources": "ExternalDataSource",
+    "Sequences": "Sequence",
+    "WSReferences": "WSReference",
 }
 
 NS = {
@@ -97,6 +104,18 @@ class AttributeTypeInfo:
                 t = "Boolean"
             elif t == "v8:ValueStorage":
                 t = "ValueStorage"
+            elif t == "v8:UUID":
+                t = "UUID"
+            elif t == "v8:BinaryData":
+                t = "BinaryData"
+            elif t == "v8:Graphics":
+                t = "Picture"
+            elif t == "v8:Version":
+                t = "Version"
+            elif t == "v8:Text":
+                t = "Text"
+            elif t == "v8:Color":
+                t = "Color"
             elif t == "cfg:AnyIBRef":
                 t = "AnyRef"
             elif t.startswith("cfg:CatalogRef."):
@@ -546,10 +565,49 @@ def scan_export_directory(export_dir: str | os.PathLike = EXPORT_DIR) -> dict[st
             try:
                 meta = parse_object_xml(str(xml_file))
                 if meta is not None and meta.uuid:
-                    # Override type_name with directory-based one
                     meta.type_name = type_name
                     meta_by_uuid[meta.uuid] = meta
             except ET.ParseError:
                 continue
 
+    # Scan test_database subdirectory (supplements, not overrides)
+    test_dir = export_path / "test_database"
+    if test_dir.is_dir():
+        for subdir in test_dir.iterdir():
+            if not subdir.is_dir():
+                continue
+            type_name = DIR_TO_TYPE.get(subdir.name, subdir.name)
+            for xml_file in sorted(subdir.glob("*.xml")):
+                try:
+                    meta = parse_object_xml(str(xml_file))
+                    if meta is not None and meta.uuid and meta.uuid not in meta_by_uuid:
+                        meta.type_name = type_name
+                        meta_by_uuid[meta.uuid] = meta
+                except ET.ParseError:
+                    continue
+
     return meta_by_uuid
+
+
+# ── Class implementation (satisfies XmlMetadataProvider contract) ─────────
+
+
+class XmlMetadataProviderImpl:
+    """Scans .export_from_1c/ directories and parses XML metadata.
+
+    Satisfies: contracts.xml_metadata.XmlMetadataProvider
+    """
+
+    def __init__(self, export_dir: str | Path | None = None) -> None:
+        self._export_dir = Path(export_dir) if export_dir else EXPORT_DIR
+
+    def scan_export_directory(
+        self,
+        export_dir: str | Path | None = None,
+    ) -> dict[str, ObjectMetadata]:
+        base = Path(export_dir) if export_dir else self._export_dir
+        return scan_export_directory(str(base))
+
+    @staticmethod
+    def parse_object_xml(filepath: str | Path) -> ObjectMetadata | None:
+        return parse_object_xml(str(filepath))

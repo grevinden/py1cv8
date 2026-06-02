@@ -18,6 +18,13 @@ CHECKPOINT_PATH: str = r"B:\py1cv8\.extraction_checkpoint.json"
 EXPORT_DIR: Path = Path(r"B:\py1cv8\.export_from_1c")
 
 # ── Type map: type_num → category (from 1C binary config blobs) ────────────
+#
+# WARNING: type_num (0-99) is NOT globally consistent across 1C configurations.
+# The 1C platform assigns type_num per serialization format, which can vary
+# between databases. This mapping is valid for the MessageCenter DB.
+# For the test DB, see TYPE_NUM_REFERENCE in v8unpack_types.py.
+#
+# These are BROAD categories for BSL extraction output folders, NOT 1C type IDs.
 
 TYPE_MAP: dict[int, str] = {
     0: "CommonForms",
@@ -31,13 +38,18 @@ TYPE_MAP: dict[int, str] = {
     8: "Ext",
     9: "Reports",
     12: "CommonTemplates",
+    13: "OtherTypes",
+    14: "OtherTypes",
     16: "Constants",
     17: "DataProcessors",
     19: "DataProcessors",
     20: "Enums",
     22: "Documents",
+    26: "OtherTypes",
+    30: "OtherTypes",
     33: "InformationRegisters",
     34: "ChartsOfCharacteristicTypes",
+    37: "OtherTypes",
     40: "Documents",
     57: "OtherTypes",
     68: "Ext",
@@ -55,6 +67,55 @@ DBNAMES_CATEGORY_MAP: dict[str, str] = {
     "Enum": "Enums",
     "ScheduledJobs": "ScheduledJobs",
     "Bots": "Bots",
+    "DocumentJournal": "DocumentJournals",
+    "Task": "Tasks",
+    "AccRg": "AccumulationRegisters",
+    "AccRgT": "AccumulationRegisters",
+    "CalcRg": "AccountingRegisters",
+    "CalcRgT": "AccountingRegisters",
+    "BusinessProcess": "BusinessProcesses",
+    "ExchangePlan": "ExchangePlans",
+    "Sequence": "Sequences",
+    "CommonAttribute": "CommonAttributes",
+    "SessionParameter": "SessionParameters",
+    "SettingsStorage": "SettingsStorages",
+}
+
+# ── Sub-table types and their parent type names ────────────────────────────
+
+SUB_TABLE_TYPES: frozenset[str] = frozenset({
+    "Fld", "VT", "LineNo", "ByDims",
+    "BPr", "BPrPoints", "Node",
+})
+
+SUB_TABLE_PARENT: dict[str, str] = {
+    "Fld": "Reference",
+    "VT": "Reference",
+    "LineNo": "Reference",
+    "ByDims": "Reference",
+    "BPr": "BusinessProcess",
+    "BPrPoints": "BusinessProcess",
+    "Node": "ExchangePlan",
+}
+
+# ── Subordinate-main companion table mapping ───────────────────────────────
+# These accompany a main table (same UUID) but are standalone tables
+# with their own schema, not true sub-tables.
+
+COMPANION_TABLE_TYPES: frozenset[str] = frozenset({
+    "ChrcSInf",
+    "IntegServiceSettings",
+    "IntegServiceMsgBody",
+    "IntegServiceExtMsgBody",
+    "EcsBotInQueue",
+})
+
+COMPANION_TABLE_PARENT: dict[str, str] = {
+    "ChrcSInf": "Chrc",
+    "IntegServiceSettings": "IntegrationService",
+    "IntegServiceMsgBody": "IntegrationService",
+    "IntegServiceExtMsgBody": "IntegrationService",
+    "EcsBotInQueue": "Bots",
 }
 
 # ── Table naming conventions ───────────────────────────────────────────────
@@ -62,9 +123,11 @@ DBNAMES_CATEGORY_MAP: dict[str, str] = {
 MAIN_TABLE_TYPES: frozenset[str] = frozenset({
     "Reference", "Document", "InfoRg", "Chrc",
     "Const", "Enum", "ScheduledJobs", "ChrcSInf",
+    "AccRg", "AccRgT", "CalcRg", "CalcRgT",
+    "BusinessProcess", "ExchangePlan", "Sequence",
+    "DocumentJournal", "Task",
+    "CommonAttribute", "SessionParameter", "SettingsStorage",
 })
-
-SUB_TABLE_TYPES: frozenset[str] = frozenset({"Fld", "VT", "LineNo", "ByDims"})
 
 SERVICE_TABLE_TYPES: frozenset[str] = frozenset({
     "STTSettings", "STTGrammar", "STTGrammarChecksum",

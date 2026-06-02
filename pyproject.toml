@@ -5,6 +5,7 @@ description = "MCP-сервер для прямого SQL-доступа к ба
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "sqlalchemy>=2.0",
     "psycopg2-binary>=2.9",
     "chardet>=5.2",
     "asyncpg>=0.31",
@@ -38,6 +39,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "chardet"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "sqlalchemy.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

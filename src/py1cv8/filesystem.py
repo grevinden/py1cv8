@@ -4,6 +4,8 @@ Responsibilities:
   - Sanitize filenames for Windows filesystem
   - Checkpoint load/save for incremental extraction
   - Write extracted module files to disk
+
+Satisfies: contracts.filesystem.FileSystemProvider
 """
 
 from __future__ import annotations
@@ -76,3 +78,44 @@ def write_module_file(
         f.write(code)
 
     return str(out_path.relative_to(out_dir))
+
+
+# ── Class implementation (satisfies FileSystemProvider contract) ──────────
+
+
+class FileSystemProviderImpl:
+    """File I/O and checkpoint management for extraction pipeline.
+
+    Satisfies: contracts.filesystem.FileSystemProvider
+    """
+
+    def __init__(self, checkpoint_path: str | Path | None = None) -> None:
+        self._checkpoint_path = Path(checkpoint_path) if checkpoint_path else CHECKPOINT_PATH
+
+    @staticmethod
+    def ensure_dir(path: str | Path) -> Path:
+        p = Path(path)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def write_text(self, path: str | Path, content: str) -> None:
+        Path(path).write_text(content, encoding="utf-8")
+
+    @staticmethod
+    def sanitize_name(name: str) -> str:
+        return sanitize(name)
+
+    def load_checkpoint(self, path: str | Path | None = None) -> set[str] | None:
+        cp = Path(path) if path else self._checkpoint_path
+        try:
+            with open(cp, encoding="utf-8") as f:
+                return set(json.load(f))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+
+    def save_checkpoint(self, path: str | Path, data: set[str]) -> None:
+        cp = Path(path)
+        tmp = cp.parent / (cp.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(sorted(data), f, ensure_ascii=False)
+        os.replace(tmp, cp)

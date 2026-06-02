@@ -35,7 +35,8 @@ src/py1cv8/
 ├── dbnames.py           # DBNames-парсинг, генерация имён таблиц
 ├── relationships.py     # Граф связей между таблицами по RRef/RTRef/Owner/Parent
 ├── schema.py            # SchemaRegistry + SchemaLoader (оркестрация discovery)
-├── mcp_server.py        # MCP-сервер: 4 tool + resources через stdio
+├── mcp_server.py        # MCP-сервер: 5 tools (get_db_overview, run_sql, get_schema, search_metadata, analyze_object) + resources через stdio
+├── bootstrap.py         # DI-контейнер: create_schema_loader, create_registry
 ├── extract.py           # ФАСАД — реэкспорт для обратной совместимости (legacy)
 └── __main__.py          # Точка входа: диспетчеризация по командам
 ```
@@ -51,7 +52,7 @@ python -m py1cv8              # BSL extraction (legacy)
 python -m py1cv8 mcp          # MCP-сервер для LLM
 python -m py1cv8 schema [db]  # Сводка схемы БД
 python extract_prod.py        # Альтернативный вход (backward compat)
-python -m pytest tests/       # 72 теста
+python -m pytest tests/       # 93 теста
 python -m ruff check src/py1cv8/
 python -m mypy src/py1cv8/
 ```

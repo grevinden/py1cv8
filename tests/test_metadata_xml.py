@@ -411,6 +411,37 @@ def test_type_info_double() -> None:
     assert "Number" in at.display
 
 
+def test_type_info_uuid() -> None:
+    at = AttributeTypeInfo(types=["v8:UUID"])
+    assert "UUID" in at.display
+    assert at.display == "UUID"
+
+
+def test_type_info_binary_data() -> None:
+    at = AttributeTypeInfo(types=["v8:BinaryData"])
+    assert "BinaryData" in at.display
+
+
+def test_type_info_graphics() -> None:
+    at = AttributeTypeInfo(types=["v8:Graphics"])
+    assert "Picture" in at.display
+
+
+def test_type_info_version() -> None:
+    at = AttributeTypeInfo(types=["v8:Version"])
+    assert "Version" in at.display
+
+
+def test_type_info_text() -> None:
+    at = AttributeTypeInfo(types=["v8:Text"])
+    assert "Text" in at.display
+
+
+def test_type_info_color() -> None:
+    at = AttributeTypeInfo(types=["v8:Color"])
+    assert "Color" in at.display
+
+
 def test_type_info_fixed_decimal() -> None:
     at = AttributeTypeInfo(
         types=["v8:FixedDecimal"],
