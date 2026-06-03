@@ -36,9 +36,6 @@ _REF_TYPE_MAP: dict[str, str] = {
 # Regex: _fldXXXrref (no underscore before rref)
 _FLD_REF_RE = re.compile(r"^_fld(\d+)rref$", re.I)
 
-# Regex: _fldXXX_rrref or _fldXXX_rtref (underscore before suffix)
-_FLD_SUFFIX_RE = re.compile(r"^_fld(\d+)_(rrref|rtref)$", re.I)
-
 # Regex: _owneridrref (Owner reference, lowercase — column name itself)
 _OWNER_IDRREF_RE = re.compile(r"^_owneridrref$", re.I)
 
@@ -96,19 +93,12 @@ def _match_reference_column(col_name: str) -> tuple[str, str] | None:
     if m:
         return f"fld{m.group(1)}", "RRef"
 
-    # 3) _fldXXX_rrref or _fldXXX_rtref
-    m = _FLD_SUFFIX_RE.match(col_name)
-    if m:
-        suffix = m.group(2)
-        ref_type = "RTRef" if suffix.lower() == "rtref" else "RRef"
-        return f"fld{m.group(1)}", ref_type
-
-    # 4) _owneridrref (exact match — column name IS the reference marker)
+    # 3) _owneridrref (exact match — column name IS the reference marker)
     m = _OWNER_IDRREF_RE.match(col_name)
     if m:
         return "owner", "Owner"
 
-    # 5) _parentidrref, _folderidrref (exact match)
+    # 4) _parentidrref, _folderidrref (exact match)
     m = _PARENT_FOLDER_IDRREF_RE.match(col_name)
     if m:
         return m.group(1).lower(), m.group(1).capitalize()

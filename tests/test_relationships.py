@@ -224,6 +224,34 @@ def test_nonstandard_owneridrref():
     assert owner_refs[0]["target_table"] == ""
 
 
+def test_nonstandard_parentidrref():
+    """_parentidrref pattern returns Parent ref type."""
+    tables = {
+        "_ReferenceX": _make_table_info(["_parentidrref"]),
+    }
+    entries = []
+    rels = build_relationships(tables, entries, frozenset({"Reference"}))
+    assert "_ReferenceX" in rels
+    refs = rels["_ReferenceX"]
+    assert any(r["column"] == "_parentidrref" for r in refs)
+    parent_refs = [r for r in refs if r["ref_type"] == "Parent"]
+    assert len(parent_refs) == 1
+
+
+def test_nonstandard_folderidrref():
+    """_folderidrref pattern returns Folder ref type."""
+    tables = {
+        "_ReferenceY": _make_table_info(["_folderidrref"]),
+    }
+    entries = []
+    rels = build_relationships(tables, entries, frozenset({"Reference"}))
+    assert "_ReferenceY" in rels
+    refs = rels["_ReferenceY"]
+    assert any(r["column"] == "_folderidrref" for r in refs)
+    folder_refs = [r for r in refs if r["ref_type"] == "Folder"]
+    assert len(folder_refs) == 1
+
+
 def test_nonstandard_lowercase_standard():
     """Standard pattern but lowercase (e.g. _Reference42_rref)."""
     tables = {

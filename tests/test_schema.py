@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from py1cv8.schema import (
     ColumnInfo,
     DBNamesEntry,
@@ -229,3 +231,64 @@ def test_schema_loader() -> None:
 
     loader.clear()
     assert loader._registries == {}
+
+
+def test_schema_getitem_happy() -> None:
+    """__getitem__ returns ObjectInfo for known table."""
+    reg = SchemaRegistry("MessageCenter")
+    reg.lazy_load()
+    obj = reg["_reference53"]
+    assert isinstance(obj, ObjectInfo)
+    assert obj.category == "Catalogs"
+
+
+def test_schema_getitem_missing() -> None:
+    """__getitem__ raises KeyError for unknown table."""
+    reg = SchemaRegistry("MessageCenter")
+    reg.lazy_load()
+    with pytest.raises(KeyError, match="nonexistent_table_xyz"):
+        _ = reg["nonexistent_table_xyz"]
+
+
+def test_schema_stale_uuids_empty() -> None:
+    """stale_uuids with empty input returns empty list."""
+    reg = SchemaRegistry("MessageCenter")
+    reg.lazy_load()
+    assert reg.stale_uuids({}) == []
+
+
+def test_schema_stale_uuids_known() -> None:
+    """stale_uuids detects unknown UUID with mismatched version."""
+    reg = SchemaRegistry("MessageCenter")
+    reg.lazy_load()
+    known = next(iter(reg.objects))
+    result = reg.stale_uuids({known: "dummy0000000000000000000000000000000"})
+    assert known in result
+
+
+def test_schema_stale_uuids_unknown() -> None:
+    """stale_uuids skips UUIDs not in registry objects."""
+    reg = SchemaRegistry("MessageCenter")
+    reg.lazy_load()
+    result = reg.stale_uuids({"unknown-0000-0000-0000-000000000000": "x"})
+    assert result == []
+
+
+def test_schema_get_object_by_uuid() -> None:
+    """get_object_by_uuid finds object by UUID."""
+    reg = SchemaRegistry("MessageCenter")
+    reg.lazy_load()
+    known_uuid = next(iter(reg.objects))
+    obj = reg.get_object_by_uuid(known_uuid)
+    assert obj is not None
+    assert obj.uuid == known_uuid
+    # Unknown UUID returns None
+    assert reg.get_object_by_uuid("00000000-0000-0000-0000-000000000000") is None
+
+
+def test_get_loader() -> None:
+    """get_loader returns the module-level singleton."""
+    from py1cv8.schema import get_loader
+
+    loader = get_loader()
+    assert loader is not None

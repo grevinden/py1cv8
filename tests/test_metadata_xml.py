@@ -462,3 +462,310 @@ def test_generated_types_missing() -> None:
 
     root = ET.fromstring("<root><irrelevant/></root>")
     assert _parse_generated_types(root) == []
+
+
+# ── Remaining edge cases ────────────────────────────────────────────────────
+
+
+def test_type_info_string_no_length() -> None:
+    """String without length qualifiers shows as 'String'."""
+    at = AttributeTypeInfo(
+        types=["xs:string"],
+        qualifiers=TypeQualifierInfo(),
+    )
+    assert at.display == "String"
+
+
+def test_type_info_number_digits_only() -> None:
+    """Number with only digits (no fraction) shows as Number(N)."""
+    at = AttributeTypeInfo(
+        types=["xs:decimal"],
+        qualifiers=TypeQualifierInfo(digits=10),
+    )
+    assert at.display == "Number(10)"
+
+
+def test_type_info_document_ref() -> None:
+    at = AttributeTypeInfo(types=["cfg:DocumentRef.Заказ"])
+    assert "DocumentRef.Заказ" in at.display
+
+
+def test_type_info_enum_ref() -> None:
+    at = AttributeTypeInfo(types=["cfg:EnumRef.Статусы"])
+    assert "EnumRef.Статусы" in at.display
+
+
+def test_type_info_other_cfg_ref() -> None:
+    at = AttributeTypeInfo(types=["cfg:SomeRef.XYZ"])
+    assert "SomeRef.XYZ" in at.display
+
+
+def test_type_info_date_no_fractions() -> None:
+    at = AttributeTypeInfo(
+        types=["xs:dateTime"],
+        qualifiers=TypeQualifierInfo(),
+    )
+    assert at.display == "Date"
+
+
+def test_parse_type_none() -> None:
+    """_parse_type returns empty AttributeTypeInfo when el is None."""
+    from py1cv8.metadata_xml import _parse_type
+    result = _parse_type(None)
+    assert isinstance(result, AttributeTypeInfo)
+    assert result.types == []
+
+
+def test_int_or_none_value_error() -> None:
+    """_int_or_none returns None on ValueError."""
+    from py1cv8.metadata_xml import _int_or_none
+    assert _int_or_none("not_a_number") is None
+
+
+def test_int_or_none_none() -> None:
+    """_int_or_none returns None on None input."""
+    from py1cv8.metadata_xml import _int_or_none
+    assert _int_or_none(None) is None
+
+
+def test_int_or_none_valid() -> None:
+    """_int_or_none returns int on valid input."""
+    from py1cv8.metadata_xml import _int_or_none
+    assert _int_or_none("42") == 42
+
+
+def test_parse_properties_none() -> None:
+    """_parse_properties returns empty dict when props is None."""
+    from py1cv8.metadata_xml import _parse_properties
+    assert _parse_properties(None) == {}
+
+
+def test_parse_object_xml_configuration_skipped(tmp_path: Path) -> None:
+    """Configuration tag is skipped in parse_object_xml."""
+    xml = """<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"
+      xmlns:md="http://v8.1c.ru/8.3/MDClasses"
+      xmlns:v8="http://v8.1c.ru/8.1/data/core"
+      xmlns:xr="http://v8.1c.ru/8.3/xcf/readable">
+    <Configuration uuid="cfg-001">
+      <md:Properties>
+        <md:Name>MyConfig</md:Name>
+      </md:Properties>
+    </Configuration>
+  </MetaDataObject>"""
+    fp = tmp_path / "configuration.xml"
+    fp.write_text(xml)
+    result = parse_object_xml(str(fp))
+    assert result is None
+
+
+def test_parse_object_xml_no_obj_el(tmp_path: Path) -> None:
+    """No known element found returns None."""
+    xml = "<root><Unknown><md:Properties><md:Name>X</md:Name></md:Properties></Unknown></root>"
+    fp = tmp_path / "unknown.xml"
+    fp.write_text(xml)
+    result = parse_object_xml(str(fp))
+    assert result is None
+
+
+def test_parse_object_xml_no_properties(tmp_path: Path) -> None:
+    """Missing Properties returns None."""
+    xml = """<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"
+      xmlns:md="http://v8.1c.ru/8.3/MDClasses">
+    <Catalog uuid="cat-001">
+      <md:Comment>no props here</md:Comment>
+    </Catalog>
+  </MetaDataObject>"""
+    fp = tmp_path / "no_props.xml"
+    fp.write_text(xml)
+    result = parse_object_xml(str(fp))
+    assert result is None
+
+
+def test_parse_object_xml_empty_name(tmp_path: Path) -> None:
+    """Empty Name returns None."""
+    xml = """<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"
+      xmlns:md="http://v8.1c.ru/8.3/MDClasses">
+    <Catalog uuid="cat-001">
+      <md:Properties>
+        <md:Name></md:Name>
+      </md:Properties>
+    </Catalog>
+  </MetaDataObject>"""
+    fp = tmp_path / "empty_name.xml"
+    fp.write_text(xml)
+    result = parse_object_xml(str(fp))
+    assert result is None
+
+
+def _replace_child_objects(xml: str, new_block: str) -> str:
+    """Replace the default ChildObjects block in _make_xml output."""
+    old_block = """\
+    <md:ChildObjects>
+      <md:Attribute uuid="attr-1">
+        <md:Properties>
+          <md:Name>Код</md:Name>
+          <md:Synonym>
+            <v8:item>
+              <v8:lang>ru</v8:lang>
+              <v8:content>Код</v8:content>
+            </v8:item>
+          </md:Synonym>
+          <md:Type>
+            <v8:Type>xs:string</v8:Type>
+            <v8:StringQualifiers>
+              <v8:Length>20</v8:Length>
+              <v8:AllowedLength>Fixed</v8:AllowedLength>
+            </v8:StringQualifiers>
+          </md:Type>
+        </md:Properties>
+      </md:Attribute>
+    </md:ChildObjects>"""
+    return xml.replace(old_block, new_block)
+
+
+def test_parse_attribute_missing_props(tmp_path: Path) -> None:
+    """Attribute without Properties is skipped."""
+    xml = _make_xml()
+    xml = _replace_child_objects(xml, """\
+    <md:ChildObjects>
+      <md:Attribute uuid="ok-attr">
+        <md:Properties>
+          <md:Name>Нормальный</md:Name>
+        </md:Properties>
+      </md:Attribute>
+      <md:Attribute uuid="bad-attr">
+        <md:Comment>no props</md:Comment>
+      </md:Attribute>
+    </md:ChildObjects>""")
+    fp = tmp_path / "bad_attr.xml"
+    fp.write_text(xml, encoding="utf-8")
+    meta = parse_object_xml(str(fp))
+    assert meta is not None
+    assert len(meta.attributes) == 1
+    assert meta.attributes[0].name == "Нормальный"
+
+
+def test_parse_tabular_section_missing_props(tmp_path: Path) -> None:
+    """TabularSection without Properties is skipped."""
+    xml = _make_xml()
+    xml = _replace_child_objects(xml, """\
+    <md:ChildObjects>
+      <md:TabularSection uuid="ts-ok">
+        <md:Properties>
+          <md:Name>Таблица</md:Name>
+        </md:Properties>
+      </md:TabularSection>
+      <md:TabularSection uuid="ts-bad">
+        <md:Comment>no props</md:Comment>
+      </md:TabularSection>
+    </md:ChildObjects>""")
+    fp = tmp_path / "bad_ts.xml"
+    fp.write_text(xml, encoding="utf-8")
+    meta = parse_object_xml(str(fp))
+    assert meta is not None
+    assert len(meta.tabular_sections) == 1
+    assert meta.tabular_sections[0].name == "Таблица"
+
+
+def test_parse_command_missing_props(tmp_path: Path) -> None:
+    """Command without Properties is skipped."""
+    xml = _make_xml()
+    xml = _replace_child_objects(xml, """\
+    <md:ChildObjects>
+      <md:Command uuid="cmd-ok">
+        <md:Properties>
+          <md:Name>Команда1</md:Name>
+        </md:Properties>
+      </md:Command>
+      <md:Command uuid="cmd-bad">
+        <md:Comment>no props</md:Comment>
+      </md:Command>
+    </md:ChildObjects>""")
+    fp = tmp_path / "bad_cmd.xml"
+    fp.write_text(xml, encoding="utf-8")
+    meta = parse_object_xml(str(fp))
+    assert meta is not None
+    assert len(meta.commands) == 1
+    assert meta.commands[0].name == "Команда1"
+
+
+def test_parse_enum_value_missing_props(tmp_path: Path) -> None:
+    """EnumValue without Properties is skipped."""
+    xml = _make_xml(type_tag="Enum")
+    xml = _replace_child_objects(xml, """\
+    <md:ChildObjects>
+      <md:EnumValue uuid="ev-ok">
+        <md:Properties>
+          <md:Name>Новый</md:Name>
+        </md:Properties>
+      </md:EnumValue>
+      <md:EnumValue uuid="ev-bad">
+        <md:Comment>no props</md:Comment>
+      </md:EnumValue>
+    </md:ChildObjects>""")
+    fp = tmp_path / "bad_ev.xml"
+    fp.write_text(xml, encoding="utf-8")
+    meta = parse_object_xml(str(fp))
+    assert meta is not None
+    assert len(meta.enum_values) == 1
+    assert meta.enum_values[0].name == "Новый"
+
+
+def test_scan_export_directory_parse_error(tmp_path: Path) -> None:
+    """scan_export_directory handles ParseError gracefully."""
+    subdir = tmp_path / "Catalogs"
+    subdir.mkdir()
+    bad = subdir / "bad.xml"
+    bad.write_text("not valid xml")
+    result = scan_export_directory(tmp_path)
+    assert isinstance(result, dict)
+
+
+def test_parse_object_xml_input_by_string(tmp_path: Path) -> None:
+    """InputByString parsing in child objects."""
+    xml = _make_xml(props_extra="""
+      <md:InputByString>
+        <xr:Field>Наименование</xr:Field>
+        <xr:Field>Код</xr:Field>
+      </md:InputByString>
+    """)
+    fp = tmp_path / "input_by_string.xml"
+    fp.write_text(xml, encoding="utf-8")
+    meta = parse_object_xml(str(fp))
+    assert meta is not None
+    assert meta.input_by_string == ["Наименование", "Код"]
+
+
+def test_parse_object_xml_presentations(tmp_path: Path) -> None:
+    """ObjectPresentation and ListPresentation are parsed."""
+    xml = _make_xml(props_extra="""
+      <md:ObjectPresentation>
+        <v8:item>
+          <v8:lang>ru</v8:lang>
+          <v8:content>Объект</v8:content>
+        </v8:item>
+      </md:ObjectPresentation>
+      <md:ListPresentation>
+        <v8:item>
+          <v8:lang>ru</v8:lang>
+          <v8:content>Список</v8:content>
+        </v8:item>
+      </md:ListPresentation>
+    """)
+    fp = tmp_path / "presentations.xml"
+    fp.write_text(xml, encoding="utf-8")
+    meta = parse_object_xml(str(fp))
+    assert meta is not None
+    assert meta.object_presentation.get("ru") == "Объект"
+    assert meta.list_presentation.get("ru") == "Список"
+
+
+def test_xml_metadata_provider_parse_object_xml(tmp_path: Path) -> None:
+    """XmlMetadataProviderImpl delegates to module-level parse."""
+    from py1cv8.metadata_xml import XmlMetadataProviderImpl
+    xml = _make_xml()
+    fp = tmp_path / "provider_test.xml"
+    fp.write_text(xml, encoding="utf-8")
+    meta = XmlMetadataProviderImpl.parse_object_xml(fp)
+    assert meta is not None
+    assert meta.name == "ТестовыйСправочник"

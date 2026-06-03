@@ -453,3 +453,69 @@ def test_get_object_config_history_by_name() -> None:
 async def test_schema_invalid_db() -> None:
     with pytest.raises(Exception, match=r"Unknown database|could not translate|does not exist"):
         await _get_schema("invalid_db", {})
+
+
+# ── Additional coverage edge cases ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_metadata_by_uuid() -> None:
+    """search_metadata with uuid filter."""
+    result = await _search_metadata("test", {"uuid": "abc"})
+    data = json.loads(result[0].text)
+    assert isinstance(data, dict)
+
+
+def test_analyze_empty_name() -> None:
+    """analyze_object with empty name."""
+    result = _analyze_object("test", {"name": ""})
+    assert "provide" in result[0].text.lower()
+
+
+def test_notification_analytics_start_only() -> None:
+    """get_notification_analytics with only start_date."""
+    result = _get_notification_analytics("MessageCenter", {"start_date": "2025-01-01"})
+    assert len(result) == 1
+    assert isinstance(result[0].text, str) and len(result[0].text) > 0
+
+
+@pytest.mark.asyncio
+async def test_query_with_resolve_names() -> None:
+    """run_sql with resolve_names=True."""
+    result = await _run_sql("test", {"sql": "SELECT 1 AS ok", "resolve_names": "true"})
+    data = json.loads(result[0].text)
+    assert data["columns"] == ["ok"]
+
+
+@pytest.mark.asyncio
+async def test_query_error_handling() -> None:
+    """run_sql with invalid SQL to trigger error handler."""
+    result = await _run_sql("test", {"sql": "SELECT nonsense_syntax_error"})
+    assert "error" in result[0].text.lower()
+
+
+def test_table_stats_empty_name() -> None:
+    """table_stats with empty table name."""
+    result = _table_stats("test", {"table": ""})
+    assert "таблицы" in result[0].text.lower()
+
+
+def test_search_bsl_code_many_matches() -> None:
+    """search_bsl_code with common keyword to trigger match_count >3."""
+    result = _search_bsl_code("MessageCenter", {"query": "конецпроцедуры"})
+    assert len(result) == 1
+    assert isinstance(result[0].text, str) and len(result[0].text) > 0
+
+
+def test_config_diff_detail_empty_uuid() -> None:
+    """config_diff_detail with empty uuid."""
+    result = _config_diff_detail("MessageCenter", {"uuid": ""})
+    assert "provide" in result[0].text.lower() or "uuid" in result[0].text.lower()
+
+
+def test_object_config_history_bad_uuid() -> None:
+    """get_object_config_history with UUID that does not exist."""
+    result = _get_object_config_history(
+        "MessageCenter", {"uuid": "00000000-0000-0000-0000-000000000000"},
+    )
+    assert "not found" in result[0].text.lower() or "не найден" in result[0].text
