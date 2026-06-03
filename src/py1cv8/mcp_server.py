@@ -2921,23 +2921,24 @@ def _config_diff_detail(dbname: str, args: dict) -> list[TextContent]:
 
 
 def _orphaned_records(dbname: str, args: dict) -> list[TextContent]:
-    """Find records with broken RRef/RTRef references."""
+    """Find records with broken RRef/RTRef/Owner/Parent/Recorder/Folder references."""
     from sqlalchemy import text as sqlt
 
     from py1cv8.db import get_session
 
     table_filter = (args.get("table") or "").strip()
-
     session = get_session(dbname)
+
     try:
         reg = _loader(dbname)
         results: list[dict] = []
+        unresolved: list[str] = []
 
-        # Iterate all relationships
+        # 1) Process columns from reg.relationships
+        scanned_tables: set[tuple[str, str]] = set()
         for src_table, refs in reg.relationships.items():
             if table_filter and src_table != table_filter:
                 continue
-
             info = reg.get_object_by_table(src_table)
             src_name = info.tech_name if info and isinstance(info, ObjectInfo) else src_table
 
@@ -2945,71 +2946,159 @@ def _orphaned_records(dbname: str, args: dict) -> list[TextContent]:
                 col = ref.get("column", "")
                 target = ref.get("target_table", "")
                 ref_type = ref.get("ref_type", "")
-
                 if not col or not target:
                     continue
+                scanned_tables.add((src_table, col))
 
-                # _idrref is a bytea UUID field — special handling
-                if col.endswith("_RRef") or col.endswith("_RTRef"):
-                    try:
-                        # bytea UUID comparison: CONVERT TO UUID format
-                        orphan_count = session.execute(
-                            sqlt(f"SELECT COUNT(*) FROM {src_table} src WHERE src.{col} IS NOT NULL AND src.{col} != '' AND NOT EXISTS (SELECT 1 FROM {target} t WHERE t._idrref = src.{col})")
-                        ).scalar() or 0
+                try:
+                    orphan_count = session.execute(
+                        sqlt(
+                            f"SELECT COUNT(*) FROM {src_table} src "
+                            f"WHERE src.{col} IS NOT NULL "
+                            f"AND NOT EXISTS (SELECT 1 FROM {target} t WHERE t._idrref = src.{col})"
+                        )
+                    ).scalar() or 0
+                    if orphan_count > 0:
+                        samples = session.execute(
+                            sqlt(
+                                f"SELECT src.{col} FROM {src_table} src "
+                                f"WHERE src.{col} IS NOT NULL "
+                                f"AND NOT EXISTS (SELECT 1 FROM {target} t WHERE t._idrref = src.{col}) "
+                                f"LIMIT 5"
+                            )
+                        ).all()
+                        results.append({
+                            "source_table": src_table,
+                            "source_name": src_name,
+                            "column": col,
+                            "ref_type": ref_type,
+                            "target_table": target,
+                            "orphan_count": orphan_count,
+                            "sample_ids": [str(r[0])[:24] for r in samples],
+                        })
+                except Exception:
+                    continue
 
-                        if orphan_count > 0:
-                            # Get sample orphan UUIDs
-                            samples = session.execute(
-                                sqlt(f"SELECT src.{col} FROM {src_table} src WHERE src.{col} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM {target} t WHERE t._idrref = src.{col}) LIMIT 5")
-                            ).all()
-                            sample_ids = [str(r[0])[:24] for r in samples]
+        # 2) Discover additional ref columns directly from information_schema
+        #    (catches lowercase patterns like _fldXXXrref that relationships misses)
+        import re as _re
+        ref_columns_direct: list = []
+        try:
+            ref_sql = (
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE table_schema='public' AND data_type='bytea' "
+                "AND column_name ~* '_.*(rref|rtref|owner|parent|recorder|folder)$'"
+                " AND column_name != '_idrref'"
+            )
+            if table_filter:
+                ref_sql += f" AND table_name='{table_filter}'"
+            ref_columns_direct = list(session.execute(sqlt(ref_sql)).fetchall())
+        except Exception:
+            pass
 
-                            results.append({
-                                "source_table": src_table,
-                                "source_name": src_name,
-                                "column": col,
-                                "ref_type": ref_type,
-                                "target_table": target,
-                                "orphan_count": orphan_count,
-                                "sample_ids": sample_ids,
-                            })
-                    except Exception:
-                        continue
-                else:
-                    # Non-idrref refs (e.g. _fld123RRef) — compare directly
-                    try:
-                        orphan_count = session.execute(
-                            sqlt(f"SELECT COUNT(*) FROM {src_table} src WHERE src.{col} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM {target} t WHERE t._idrref = src.{col})")
-                        ).scalar() or 0
+        for src_table, col in ref_columns_direct:
+            if (src_table, col) in scanned_tables:
+                continue
+            if table_filter and src_table != table_filter:
+                continue
 
-                        if orphan_count > 0:
-                            samples = session.execute(
-                                sqlt(f"SELECT src.{col} FROM {src_table} src WHERE src.{col} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM {target} t WHERE t._idrref = src.{col}) LIMIT 5")
-                            ).all()
-                            results.append({
-                                "source_table": src_table,
-                                "source_name": src_name,
-                                "column": col,
-                                "ref_type": ref_type,
-                                "target_table": target,
-                                "orphan_count": orphan_count,
-                                "sample_ids": [str(r[0])[:24] for r in samples],
-                            })
-                    except Exception:
-                        continue
+            # Skip columns that are just _idrref variants (PK, not refs)
+            if _re.match(r"^_.*_idrref$", col, _re.I):
+                continue
+            if _re.match(r"^_reference\d+_idrref$", col, _re.I):
+                continue
+            if _re.match(r"^_document\d+_idrref$", col, _re.I):
+                continue
+            if col == "_idrref":
+                continue
+
+            # Try to resolve target: _fldXXX...rref / _fldXXX...rrref / _fldXXX...rtref
+            target = ""
+            m = _re.match(r"^_fld(\d+)", col, _re.I)
+            if m:
+                tbl_num = m.group(1)
+                for prefix in ("_reference", "_document", "_inforg", "_const", "_enum"):
+                    candidate = f"{prefix}{tbl_num}"
+                    if candidate in reg.tables:
+                        target = candidate
+                        break
+
+            if not target:
+                unresolved.append(f"  {src_table}.{col} — не удалось определить таблицу-цель")
+                continue
+
+            info = reg.get_object_by_table(src_table)
+            src_name = info.tech_name if info and isinstance(info, ObjectInfo) else src_table
+
+            try:
+                orphan_count = session.execute(
+                    sqlt(
+                        f"SELECT COUNT(*) FROM {src_table} src "
+                        f"WHERE src.{col} IS NOT NULL "
+                        f"AND NOT EXISTS (SELECT 1 FROM {target} t WHERE t._idrref = src.{col})"
+                    )
+                ).scalar() or 0
+                if orphan_count > 0:
+                    samples = session.execute(
+                        sqlt(
+                            f"SELECT src.{col} FROM {src_table} src "
+                            f"WHERE src.{col} IS NOT NULL "
+                            f"AND NOT EXISTS (SELECT 1 FROM {target} t WHERE t._idrref = src.{col}) "
+                            f"LIMIT 5"
+                        )
+                    ).all()
+                    results.append({
+                        "source_table": src_table,
+                        "source_name": src_name,
+                        "column": col,
+                        "ref_type": "RRef",
+                        "target_table": target,
+                        "orphan_count": orphan_count,
+                        "sample_ids": [str(r[0])[:24] for r in samples],
+                    })
+            except Exception:
+                continue
+
+        # ── Build output ──────────────────────────────────────────────────
+        text_parts: list[str] = []
+        reporting: list[str] = []
+        details: list[str] = []
+
+        if results:
+            reporting.append(f"Найдено {len(results)} типов битых ссылок:")
+            for r in results:
+                reporting.append(
+                    f"  {r['source_table']} ({r['source_name']}).{r['column']} "
+                    f"→ {r['target_table']}: {r['orphan_count']} сирот"
+                )
+                if r["sample_ids"]:
+                    reporting.append(f"    примеры: {', '.join(r['sample_ids'][:3])}")
 
         if not results:
-            msg = "Битые ссылки не найдены." if not table_filter else f"В таблице {table_filter} битые ссылки не найдены."
-            return [TextContent(type="text", text=msg)]
+            reporting.append("Битых ссылок не найдено.")
 
-        text_parts = [f"Найдено {len(results)} типов битых ссылок:", ""]
-        for r in results:
-            text_parts.append(
-                f"{r['source_table']} ({r['source_name']}).{r['column']} "
-                f"→ {r['target_table']}: {r['orphan_count']} сирот"
+        total_rel_refs = sum(len(v) for v in reg.relationships.values()) if reg.relationships else 0
+        if total_rel_refs:
+            details.append(
+                f"Проверено {total_rel_refs} ссылочных колонок "
+                f"в {len(reg.relationships)} таблицах (relationships модуль)."
             )
-            if r["sample_ids"]:
-                text_parts.append(f"  Примеры: {', '.join(r['sample_ids'][:3])}")
+        else:
+            details.append(
+                "Стандартных ссылочных колонок не обнаружено — "
+                "используются нестандартные имена (_fldXXXrref, _owneridrref, ...)."
+            )
+        if ref_columns_direct:
+            details.append(
+                f"Через прямой обход схемы найдено {len(ref_columns_direct)} колонок-кандидатов."
+            )
+        if unresolved:
+            details.append(f"Не удалось определить таблицу-цель для {len(unresolved)} колонок:")
+            details.extend(unresolved)
+
+        text_parts.extend(reporting)
+        text_parts.append("")
+        text_parts.extend(details)
 
         return [TextContent(type="text", text="\n".join(text_parts))]
     except Exception as e:
