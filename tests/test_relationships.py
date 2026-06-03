@@ -55,7 +55,9 @@ def test_build_relationships_basic_rref():
         ("bbbb-0000-0000-0000-000000000002", "Document", 104),
     ])
 
-    rels = build_relationships(tables, entries, frozenset({"Reference", "Document", "InfoRg", "AccRg"}))
+    rels = build_relationships(
+        tables, entries, frozenset({"Reference", "Document", "InfoRg", "AccRg"})
+    )
 
     assert "_AccRg1_Recorder" in rels
     refs = rels["_AccRg1_Recorder"]

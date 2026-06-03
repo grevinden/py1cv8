@@ -200,7 +200,6 @@ def _get_bsl_code_from_db(dbname: str, module_name: str) -> list[dict]:
     Scans all Config blobs, decompresses them, and matches by tech_name/UUID.
     Returns list of {uuid, tech_name, code_blocks} dicts.
     """
-    import re
 
     from sqlalchemy import select
 
@@ -244,13 +243,7 @@ def _get_bsl_code_from_db(dbname: str, module_name: str) -> list[dict]:
         for obj in reg.objects.values():
             main_table = obj.main_table.lower()
             table_clean = main_table.lstrip("_").replace("_", "")
-            if q in main_table or q in table_clean or q_clean in table_clean:
-                matched_uuids.add(obj.uuid)
-            elif obj.tech_name and q in obj.tech_name.lower():
-                matched_uuids.add(obj.uuid)
-            elif obj.display_ru and q in obj.display_ru.lower():
-                matched_uuids.add(obj.uuid)
-            elif q in obj.uuid.lower():
+            if q in main_table or q in table_clean or q_clean in table_clean or obj.tech_name and q in obj.tech_name.lower() or obj.display_ru and q in obj.display_ru.lower() or q in obj.uuid.lower():
                 matched_uuids.add(obj.uuid)
 
     if not matched_uuids:
@@ -1111,6 +1104,151 @@ async def handle_list_tools() -> list[Tool]:
                 "required": ["dbname"],
             },
         ),
+        Tool(
+            name="table_stats",
+            description=(
+                "Показывает статистику таблицы: количество строк, NULL-ability, "
+                "distinct-значения, диапазоны дат, топ-значения. "
+
+                "ИСПОЛЬЗУЙ ЭТОТ МЕТОД, КОГДА:\n"
+                "- Нужно быстро понять объём данных в таблице.\n"
+                "- Нужно оценить качество данных (сколько NULL, сколько уникальных).\n"
+                "- Нужно увидеть распределение значений в строковых полях.\n"
+
+                "РЕЗУЛЬТАТ СОДЕРЖИТ:\n"
+                "- Общее количество строк.\n"
+                "- Для каждой колонки: тип, % не-NULL, distinct-значений.\n"
+                "- Для дат: минимальная/максимальная.\n"
+                "- Для чисел: минимум, максимум, среднее.\n"
+                "- Для строк: топ-10 значений.\n"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dbname": {
+                        "type": "string",
+                        "enum": AVAILABLE_DBS,
+                        "description": f"Доступны: {', '.join(AVAILABLE_DBS)}.",
+                    },
+                    "table": {
+                        "type": "string",
+                        "description": "Имя таблицы (например, _reference53, _document209).",
+                    },
+                },
+                "required": ["dbname", "table"],
+            },
+        ),
+        Tool(
+            name="find_by_value",
+            description=(
+                "Глобальный поиск значения по всем строковым колонкам таблиц. "
+
+                "ИСПОЛЬЗУЙ ЭТОТ МЕТОД, КОГДА:\n"
+                "- Нужно найти, где используется GUID, номер документа, имя контрагента.\n"
+                "- Нужно понять, в каких таблицах встречается определённое значение.\n"
+
+                "РЕЗУЛЬТАТ СОДЕРЖИТ:\n"
+                "- Таблицы и колонки, где найдено значение.\n"
+                "- Количество совпадений.\n"
+                "- Примеры _idrref найденных записей.\n"
+
+                "ПАРАМЕТРЫ:\n"
+                "- value — значение для поиска (LIKE-поиск, регистронезависимый).\n"
+                "- table (опционально) — ограничить поиск одной таблицей.\n"
+                "- max_results (опционально, по умолч. 20) — максимум результатов.\n"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dbname": {
+                        "type": "string",
+                        "enum": AVAILABLE_DBS,
+                        "description": f"Доступны: {', '.join(AVAILABLE_DBS)}.",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "Значение для поиска (регистронезависимый ILIKE %value%).",
+                    },
+                    "table": {
+                        "type": "string",
+                        "description": "Ограничить поиск одной таблицей (опционально).",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "Максимум результатов (до 100).",
+                    },
+                },
+                "required": ["dbname", "value"],
+            },
+        ),
+        Tool(
+            name="config_diff_detail",
+            description=(
+                "Детальный diff объекта метаданных между configsave и config. "
+
+                "ИСПОЛЬЗУЙ ЭТОТ МЕТОД, КОГДА:\n"
+                "- После find_changed_objects нужно увидеть, ЧТО конкретно изменилось в объекте.\n"
+                "- Нужно провести ревью изменений конфигурации на уровне содержимого.\n"
+
+                "РЕЗУЛЬТАТ СОДЕРЖИТ:\n"
+                "- Содержимое объекта из configsave (pending) и config (live).\n"
+                "- Унифицированный diff (строки с + добавлены, с - удалены).\n"
+                "- Метаданные объекта (имя, UUID, категория).\n"
+
+                "ПАРАМЕТРЫ:\n"
+                "- uuid — UUID объекта метаданных или entry_uuid из versions blob.\n"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dbname": {
+                        "type": "string",
+                        "enum": AVAILABLE_DBS,
+                        "description": f"Доступны: {', '.join(AVAILABLE_DBS)}.",
+                    },
+                    "uuid": {
+                        "type": "string",
+                        "description": "UUID объекта метаданных или entry_uuid из versions blob.",
+                    },
+                },
+                "required": ["dbname", "uuid"],
+            },
+        ),
+        Tool(
+            name="orphaned_records",
+            description=(
+                "Находит битые ссылки — записи, чьи RRef/RTRef поля указывают "
+                "на несуществующие ID. "
+
+                "ИСПОЛЬЗУЙ ЭТОТ МЕТОД, КОГДА:\n"
+                "- Нужно проверить целостность данных.\n"
+                "- После обмена/переноса данных — найти потерянные ссылки.\n"
+                "- Нужно почистить мусор в справочниках и регистрах.\n"
+
+                "РЕЗУЛЬТАТ СОДЕРЖИТ:\n"
+                "- Для каждой связи: сколько битых ссылок, примеры UUID.\n"
+                "- Фильтрация по таблице (опционально).\n"
+
+                "ПАРАМЕТРЫ:\n"
+                "- table (опционально) — проверить только одну таблицу.\n"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dbname": {
+                        "type": "string",
+                        "enum": AVAILABLE_DBS,
+                        "description": f"Доступны: {', '.join(AVAILABLE_DBS)}.",
+                    },
+                    "table": {
+                        "type": "string",
+                        "description": "Имя таблицы для проверки (опционально, без фильтра — все таблицы).",
+                    },
+                },
+                "required": ["dbname"],
+            },
+        ),
     ]
 
 
@@ -1146,6 +1284,14 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
         return _find_changed_objects(dbname, arguments)
     elif name == "get_object_config_history":
         return _get_object_config_history(dbname, arguments)
+    elif name == "table_stats":
+        return _table_stats(dbname, arguments)
+    elif name == "find_by_value":
+        return _find_by_value(dbname, arguments)
+    elif name == "config_diff_detail":
+        return _config_diff_detail(dbname, arguments)
+    elif name == "orphaned_records":
+        return _orphaned_records(dbname, arguments)
     raise ValueError(f"Unknown tool: {name}")
 
 
@@ -1504,10 +1650,13 @@ def _get_relationship_map(dbname: str, args: dict) -> list[TextContent]:
         if name in tname.lower():
             table_name = tname
             break
-        if isinstance(info, ObjectInfo):
-            if name in info.tech_name.lower() or name in info.display_ru.lower() or name in info.uuid.lower():
-                table_name = tname
-                break
+        if isinstance(info, ObjectInfo) and (
+            name in info.tech_name.lower()
+            or name in info.display_ru.lower()
+            or name in info.uuid.lower()
+        ):
+            table_name = tname
+            break
 
     if not table_name:
         return [TextContent(type="text", text=f"Table/object '{args.get('name')}' not found.")]
@@ -1915,7 +2064,7 @@ def _search_1c_queries(dbname: str, args: dict) -> list[TextContent]:
                         if q.note:
                             parts.append(f"  Примечание: {q.note}")
                 except Exception:
-                    parts.append(f"  (не удалось распарсить запрос)")
+                    parts.append("  (не удалось распарсить запрос)")
 
         parts.append("")
 
@@ -1938,6 +2087,7 @@ def _parse_versions_blob(txt: str) -> dict[str, str]:
 def _read_versions_blob(session, table: str) -> dict[str, str] | None:
     """Read and parse the 'versions' blob from config or configsave table."""
     import zlib
+
     from sqlalchemy import text as sql_text
     try:
         row = session.execute(
@@ -1997,6 +2147,7 @@ def _resolve_metadata_from_file(
     """
     import re
     import zlib
+
     from sqlalchemy import text as sql_text
 
     # Strip .0, .N suffixes
@@ -2299,10 +2450,8 @@ def _find_metadata_uuid_by_name(name_query: str, reg: SchemaRegistry) -> str | N
             if q_clean and q_clean in tbl_clean:
                 return obj.uuid
         # Also try "reference_53" → from tech_name or other fields
-        if q in "reference" and obj.table_number:
-            # Match "Reference_53" or "reference53" or just "53"
-            if str(obj.table_number) in q:
-                return obj.uuid
+        if q in "reference" and obj.table_number and str(obj.table_number) in q:
+            return obj.uuid
 
     return None
 
@@ -2401,6 +2550,468 @@ def _get_object_config_history(dbname: str, args: dict) -> list[TextContent]:
             result["note"] = "Объект не найден в истории конфигурации (возможно, это сервисный объект без version entry)."
 
         return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2, default=str))]
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error: {e}")]
+    finally:
+        session.close()
+
+
+# ── New tools: table_stats, find_by_value, config_diff_detail, orphaned_records ──
+
+
+def _table_stats(dbname: str, args: dict) -> list[TextContent]:
+    """Show row counts, NULL ratios, distinct values, date ranges, top values."""
+    from sqlalchemy import text as sqlt
+
+    from py1cv8.db import get_session
+
+    table_name = (args.get("table") or "").strip()
+    if not table_name:
+        return [TextContent(type="text", text="Укажите имя таблицы.")]
+
+    session = get_session(dbname)
+    try:
+        reg = _loader(dbname)
+        info = reg.get_object_by_table(table_name)
+        obj_name = info.tech_name if info and isinstance(info, ObjectInfo) else ""
+        obj_ru = info.display_ru if info and isinstance(info, ObjectInfo) else ""
+
+        # Get columns from information_schema
+        cols = session.execute(
+            sqlt(
+                "SELECT column_name, data_type, is_nullable "
+                "FROM information_schema.columns WHERE table_name = :t "
+                "ORDER BY ordinal_position",
+            ),
+            {"t": table_name},
+        ).all()
+
+        if not cols:
+            return [TextContent(type="text", text=f"Таблица '{table_name}' не найдена.")]
+
+        # Row count
+        row_count = session.execute(sqlt(f"SELECT COUNT(*) FROM {table_name}")).scalar() or 0
+
+        # Per-column stats: batch into groups by type
+        date_cols: list[str] = []
+        num_cols: list[str] = []
+        str_cols: list[str] = []
+        bool_cols: list[str] = []
+        other_cols: list[str] = []
+
+        for col_name, data_type, _is_nullable in cols:
+            dtype = data_type.upper()
+            if dtype in ("DATE", "TIMESTAMP", "TIMESTAMP WITHOUT TIME ZONE", "TIMESTAMP WITH TIME ZONE"):
+                date_cols.append(col_name)
+            elif dtype in ("INTEGER", "BIGINT", "SMALLINT", "NUMERIC", "REAL", "DOUBLE PRECISION", "MONEY"):
+                num_cols.append(col_name)
+            elif dtype in ("CHARACTER VARYING", "VARCHAR", "TEXT", "CHARACTER", "CHAR", "NAME", "USER-DEFINED"):
+                str_cols.append(col_name)
+            elif dtype == "BOOLEAN":
+                bool_cols.append(col_name)
+            else:
+                other_cols.append(col_name)
+
+        # Non-null counts for all columns (batch via UNION ALL, up to 20 per batch)
+        non_null_map: dict[str, int] = {}
+        distinct_map: dict[str, int] = {}
+        all_col_names = [c[0] for c in cols]
+        for i in range(0, len(all_col_names), 20):
+            batch_names = all_col_names[i:i + 20]
+            parts = []
+            for cn in batch_names:
+                parts.append(f"SELECT '{cn}' AS col, COUNT({cn}) AS nn, COUNT(DISTINCT {cn}) AS dist FROM {table_name}")
+            batch_row = session.execute(
+                sqlt(" UNION ALL ".join(parts))
+            ).all()
+            for r in batch_row:
+                non_null_map[r[0]] = r[1]
+                distinct_map[r[0]] = r[2]
+
+        # Date ranges
+        date_ranges: dict[str, dict[str, str]] = {}
+        if date_cols:
+            parts = [f"SELECT '{cn}' AS col, MIN({cn}) AS mn, MAX({cn}) AS mx FROM {table_name}" for cn in date_cols]
+            dr_rows = session.execute(sqlt(" UNION ALL ".join(parts))).all()
+            for drr in dr_rows:
+                date_ranges[drr[0]] = {"min": str(drr[1] or ""), "max": str(drr[2] or "")}
+
+        # Numeric stats
+        num_stats: dict[str, dict[str, str]] = {}
+        if num_cols:
+            parts = [
+                f"SELECT '{cn}' AS col, MIN({cn}) AS mn, MAX({cn}) AS mx, AVG({cn})::numeric(20,4) AS avg FROM {table_name}"
+                for cn in num_cols
+            ]
+            ns_rows = session.execute(sqlt(" UNION ALL ".join(parts))).all()
+            for nsr in ns_rows:
+                num_stats[nsr[0]] = {"min": str(nsr[1] or ""), "max": str(nsr[2] or ""), "avg": str(nsr[3] or "")}
+
+        # Top values for string columns (limit to 10 best)
+        # Also try USER-DEFINED columns (1C custom types) by casting to text
+        top_values: dict[str, list[dict]] = {}
+        all_str = str_cols + [c for c in other_cols]
+        for sc in all_str[:10]:
+            try:
+                cast_sc = f"{sc}::text" if sc in other_cols else sc
+                tv = session.execute(
+                    sqlt(f"SELECT {cast_sc} AS val, COUNT(*) AS cnt FROM {table_name} WHERE {sc} IS NOT NULL AND {cast_sc} != '' GROUP BY {cast_sc} ORDER BY cnt DESC LIMIT 10")
+                ).all()
+                if tv:
+                    top_values[sc] = [
+                        {"value": str(tvr[0])[:80] if tvr[0] else "(empty)", "count": tvr[1]}
+                        for tvr in tv
+                    ]
+            except Exception:
+                pass
+
+        # Build result
+        header_parts = [f"Таблица: {table_name}"]
+        if obj_name:
+            header_parts.append(f" ({obj_name})")
+        if obj_ru:
+            header_parts.append(f" — {obj_ru}")
+        header_parts.append(f" — {row_count} строк")
+
+        result_lines = ["".join(header_parts), ""]
+        result_lines.append(f"{'Колонка':35s} {'Тип':20s} {'Всего':>8s} {'Не-NULL':>8s} {'%':>5s} {'Distinct':>10s}")
+        result_lines.append("-" * 90)
+        for col_name, data_type, _is_nullable in cols:
+            nn = non_null_map.get(col_name, 0)
+            dist = distinct_map.get(col_name, 0)
+            nn_pct = (nn / row_count * 100) if row_count > 0 else 0.0
+            dtype_short = data_type[:18] if len(data_type) > 18 else data_type
+            result_lines.append(
+                f"{col_name:35s} {dtype_short:20s} {row_count:>8d} {nn:>8d} {nn_pct:>4.0f}% {dist:>10d}"
+            )
+
+        # Date ranges
+        if date_ranges:
+            result_lines.extend(["", "Даты:"])
+            for cn, dr in sorted(date_ranges.items()):
+                result_lines.append(f"  {cn}: {dr['min']} → {dr['max']}")
+
+        # Numeric stats
+        if num_stats:
+            result_lines.extend(["", "Числа:"])
+            for cn, ns in sorted(num_stats.items()):
+                result_lines.append(f"  {cn}: min={ns['min']}, max={ns['max']}, avg={ns['avg']}")
+
+        # Top values
+        if top_values:
+            result_lines.extend(["", "Топ-10 значений:"])
+            for cn, vals in top_values.items():
+                result_lines.append(f"  {cn}:")
+                for v in vals[:5]:
+                    result_lines.append(f"    {v['value'][:60]:60s} ({v['count']})")
+                if len(vals) > 5:
+                    result_lines.append(f"    ... и ещё {len(vals) - 5} значений")
+                    result_lines.append("")
+
+        return [TextContent(type="text", text="\n".join(result_lines))]
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error: {e}")]
+    finally:
+        session.close()
+
+
+def _find_by_value(dbname: str, args: dict) -> list[TextContent]:
+    """Search for a value across all text/varchar columns in all or specified table."""
+    from sqlalchemy import text as sqlt
+
+    from py1cv8.db import get_session
+
+    value = (args.get("value") or "").strip()
+    table_filter = (args.get("table") or "").strip()
+    max_results = min(args.get("max_results", 20), 100)
+
+    if not value or len(value) < 2:
+        return [TextContent(type="text", text="Значение должно быть минимум 2 символа.")]
+
+    session = get_session(dbname)
+    try:
+        # Get all tables with their text-compatible columns
+        # 1C stores strings as USER-DEFINED types; also check standard text types
+        text_types = "'character varying', 'varchar', 'text', 'character', 'char', 'name', 'USER-DEFINED'"
+        if table_filter:
+            tables_sql = f"SELECT table_name, column_name FROM information_schema.columns WHERE table_name = :t AND data_type IN ({text_types}) ORDER BY ordinal_position"
+            tables = session.execute(sqlt(tables_sql), {"t": table_filter}).all()
+        else:
+            tables_sql = f"SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' AND data_type IN ({text_types}) ORDER BY table_name, ordinal_position"
+            tables = session.execute(sqlt(tables_sql)).all()
+
+        # Group columns by table
+        table_columns: dict[str, list[str]] = {}
+        for t, c in tables:
+            table_columns.setdefault(t, []).append(c)
+
+        reg = _loader(dbname)
+        from typing import Any as _Any
+        results: list[dict[str, _Any]] = []
+        like_pattern = f"%{value}%"
+
+        for tbl, str_cols in table_columns.items():
+            if len(results) >= max_results:
+                break
+
+            # Check if _idrref exists in this table
+            has_idrref = session.execute(
+                sqlt("SELECT 1 FROM information_schema.columns WHERE table_name=:t AND column_name='_idrref'"),
+                {"t": tbl},
+            ).scalar() is not None
+            id_field = "_idrref" if has_idrref else "ctid::text"
+
+            # Build per-column queries (each must be parenthesized for LIMIT in UNION)
+            col_parts = []
+            for sc in str_cols:
+                safe_sc = sc.replace("'", "''")
+                col_parts.append(
+                    f"(SELECT '{safe_sc}' AS col, {id_field} AS row_id, {sc}::text AS matched "
+                    f"FROM {tbl} WHERE {sc}::text ILIKE '{like_pattern.replace(chr(39), chr(39)+chr(39))}' LIMIT 5)"
+                )
+            if not col_parts:
+                continue
+
+            try:
+                union_sql = " UNION ALL ".join(col_parts)
+                rows = session.execute(sqlt(union_sql)).all()
+                if not rows:
+                    continue
+                # Get total match count (wrap sum in outer SELECT)
+                count_parts = []
+                for sc in str_cols:
+                    count_parts.append(
+                        f"(SELECT COUNT(*) FROM {tbl} WHERE {sc}::text ILIKE '{like_pattern.replace(chr(39), chr(39)+chr(39))}')"
+                    )
+                count_sql = "SELECT " + " + ".join(count_parts)
+                total_matches = session.execute(sqlt(count_sql)).scalar() or 0
+
+                obj_info = reg.get_object_by_table(tbl)
+                tbl_name_display = obj_info.tech_name if obj_info and isinstance(obj_info, ObjectInfo) else tbl
+                samples = []
+                for r in rows:
+                    row_id_str = str(r[1])[:24] if r[1] else ""
+                    matched_str = str(r[2])[:60] if r[2] else ""
+                    samples.append({"column": r[0], "row_id": row_id_str, "matched": matched_str})
+
+                results.append({
+                    "table": tbl,
+                    "table_name": tbl_name_display,
+                    "match_count": total_matches,
+                    "samples": samples[:5],
+                })
+            except Exception:
+                continue
+
+        if not results:
+            return [TextContent(type="text", text=f"Значение '{value}' не найдено.")]
+
+        summary = f"Поиск «{value}» — найдено в {len(results)} таблицах"
+        text_parts = [summary, ""]
+        for res in results:
+            text_parts.append(f"{res['table']} ({res['table_name']}): {res['match_count']} совпадений")
+            for s in res["samples"]:
+                text_parts.append(f"  [{s['column']}] {s['matched'][:60]}")
+            text_parts.append("")
+
+        return [TextContent(type="text", text="\n".join(text_parts[:80]))]
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error: {e}")]
+    finally:
+        session.close()
+
+
+def _config_diff_detail(dbname: str, args: dict) -> list[TextContent]:
+    """Show detailed diff of a metadata object between configsave and config."""
+    import difflib
+    import zlib
+
+    from sqlalchemy import text as sqlt
+
+    from py1cv8.db import get_session
+
+    obj_uuid = (args.get("uuid") or "").strip().lower()
+    if not obj_uuid:
+        return [TextContent(type="text", text="Укажите uuid объекта.")]
+
+    session = get_session(dbname)
+    try:
+        reg = _loader(dbname)
+
+        # Try to resolve the UUID: check metadata_map, then try blob read
+        meta_info = reg.metadata_map.get(obj_uuid)
+        obj_info = reg.get_object_by_uuid(obj_uuid)
+
+        tech_name = (obj_info.tech_name if obj_info else (meta_info or {}).get("tech_name", "")) or "?"
+        display_ru = obj_info.display_ru if obj_info else (meta_info or {}).get("display_names", {}).get("ru", "")
+        category = obj_info.category if obj_info else (_category_from_type_num((meta_info or {}).get("type_num")) or "?")
+
+        # Read blob from configsave and config
+        # Try both obj_uuid and obj_uuid + .N patterns
+        def _read_blob(tbl: str, uid: str) -> str | None:
+            """Read and decompress a blob from config or configsave."""
+            for fn in (uid, f"{uid}.0"):
+                try:
+                    row = session.execute(
+                        sqlt(f"SELECT binarydata FROM {tbl} WHERE filename='{fn}' LIMIT 1")
+                    ).one_or_none()
+                    if row is None:
+                        continue
+                    data = bytes(row[0])
+                    dec = zlib.decompress(data, -15)
+                    return dec.decode("utf-8-sig", errors="replace")
+                except Exception:
+                    continue
+            return None
+
+        saved_text = _read_blob("configsave", obj_uuid)
+        live_text = _read_blob("config", obj_uuid)
+
+        parts = [f"Объект: {tech_name} ({display_ru})" if display_ru else f"Объект: {tech_name}"]
+        parts.append(f"UUID: {obj_uuid}")
+        parts.append(f"Категория: {category}")
+        parts.append("")
+
+        if saved_text is None and live_text is None:
+            parts.append("Объект не найден ни в configsave, ни в config.")
+            return [TextContent(type="text", text="\n".join(parts))]
+
+        if saved_text is None:
+            parts.append("Объект есть только в config (live) — удалён из pending.")
+            parts.append("")
+            if live_text:
+                parts.append(live_text[:2000])
+            return [TextContent(type="text", text="\n".join(parts))]
+
+        if live_text is None:
+            parts.append("Объект есть только в configsave (pending) — новый объект.")
+            parts.append("")
+            if saved_text:
+                parts.append(saved_text[:2000])
+            return [TextContent(type="text", text="\n".join(parts))]
+
+        if saved_text == live_text:
+            parts.append("Объект идентичен в configsave и config — изменений нет.")
+            return [TextContent(type="text", text="\n".join(parts))]
+
+        # Show unified diff
+        saved_lines = saved_text.splitlines(keepends=True)
+        live_lines = live_text.splitlines(keepends=True)
+        diff_lines = list(difflib.unified_diff(
+            live_lines, saved_lines,
+            fromfile="config (live)",
+            tofile="configsave (pending)",
+            lineterm="",
+        ))
+
+        parts.append(f"Размер live: {len(live_text)} байт, размер pending: {len(saved_text)} байт")
+        parts.append(f"Изменений: {len(diff_lines)} строк")
+        parts.append("")
+
+        # Limit diff output
+        if len(diff_lines) > 200:
+            diff_lines = diff_lines[:200] + [f"... и ещё {len(diff_lines) - 200} строк"]
+
+        parts.extend(diff_lines)
+        return [TextContent(type="text", text="\n".join(parts))]
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error: {e}")]
+    finally:
+        session.close()
+
+
+def _orphaned_records(dbname: str, args: dict) -> list[TextContent]:
+    """Find records with broken RRef/RTRef references."""
+    from sqlalchemy import text as sqlt
+
+    from py1cv8.db import get_session
+
+    table_filter = (args.get("table") or "").strip()
+
+    session = get_session(dbname)
+    try:
+        reg = _loader(dbname)
+        results: list[dict] = []
+
+        # Iterate all relationships
+        for src_table, refs in reg.relationships.items():
+            if table_filter and src_table != table_filter:
+                continue
+
+            info = reg.get_object_by_table(src_table)
+            src_name = info.tech_name if info and isinstance(info, ObjectInfo) else src_table
+
+            for ref in refs:
+                col = ref.get("column", "")
+                target = ref.get("target_table", "")
+                ref_type = ref.get("ref_type", "")
+
+                if not col or not target:
+                    continue
+
+                # _idrref is a bytea UUID field — special handling
+                if col.endswith("_RRef") or col.endswith("_RTRef"):
+                    try:
+                        # bytea UUID comparison: CONVERT TO UUID format
+                        orphan_count = session.execute(
+                            sqlt(f"SELECT COUNT(*) FROM {src_table} src WHERE src.{col} IS NOT NULL AND src.{col} != '' AND NOT EXISTS (SELECT 1 FROM {target} t WHERE t._idrref = src.{col})")
+                        ).scalar() or 0
+
+                        if orphan_count > 0:
+                            # Get sample orphan UUIDs
+                            samples = session.execute(
+                                sqlt(f"SELECT src.{col} FROM {src_table} src WHERE src.{col} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM {target} t WHERE t._idrref = src.{col}) LIMIT 5")
+                            ).all()
+                            sample_ids = [str(r[0])[:24] for r in samples]
+
+                            results.append({
+                                "source_table": src_table,
+                                "source_name": src_name,
+                                "column": col,
+                                "ref_type": ref_type,
+                                "target_table": target,
+                                "orphan_count": orphan_count,
+                                "sample_ids": sample_ids,
+                            })
+                    except Exception:
+                        continue
+                else:
+                    # Non-idrref refs (e.g. _fld123RRef) — compare directly
+                    try:
+                        orphan_count = session.execute(
+                            sqlt(f"SELECT COUNT(*) FROM {src_table} src WHERE src.{col} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM {target} t WHERE t._idrref = src.{col})")
+                        ).scalar() or 0
+
+                        if orphan_count > 0:
+                            samples = session.execute(
+                                sqlt(f"SELECT src.{col} FROM {src_table} src WHERE src.{col} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM {target} t WHERE t._idrref = src.{col}) LIMIT 5")
+                            ).all()
+                            results.append({
+                                "source_table": src_table,
+                                "source_name": src_name,
+                                "column": col,
+                                "ref_type": ref_type,
+                                "target_table": target,
+                                "orphan_count": orphan_count,
+                                "sample_ids": [str(r[0])[:24] for r in samples],
+                            })
+                    except Exception:
+                        continue
+
+        if not results:
+            msg = "Битые ссылки не найдены." if not table_filter else f"В таблице {table_filter} битые ссылки не найдены."
+            return [TextContent(type="text", text=msg)]
+
+        text_parts = [f"Найдено {len(results)} типов битых ссылок:", ""]
+        for r in results:
+            text_parts.append(
+                f"{r['source_table']} ({r['source_name']}).{r['column']} "
+                f"→ {r['target_table']}: {r['orphan_count']} сирот"
+            )
+            if r["sample_ids"]:
+                text_parts.append(f"  Примеры: {', '.join(r['sample_ids'][:3])}")
+
+        return [TextContent(type="text", text="\n".join(text_parts))]
     except Exception as e:
         return [TextContent(type="text", text=f"Error: {e}")]
     finally:

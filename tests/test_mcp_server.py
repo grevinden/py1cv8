@@ -10,9 +10,13 @@ from py1cv8.bootstrap import create_schema_loader
 from py1cv8.mcp_server import (
     _analyze_object,
     _build_db_overview,
+    _config_diff_detail,
+    _find_by_value,
     _get_schema,
+    _orphaned_records,
     _run_sql,
     _search_metadata,
+    _table_stats,
 )
 from py1cv8.schema import ObjectInfo
 
@@ -168,6 +172,86 @@ async def test_query_with_limit() -> None:
     result = await _run_sql("test", {"sql": f"SELECT * FROM {TEST_TABLE}", "limit": 3})
     data = json.loads(result[0].text)
     assert data["row_count"] <= 3
+
+
+# ── table_stats tool ──────────────────────────────────────────────────────
+
+
+def test_table_stats_known_table() -> None:
+    result = _table_stats("test", {"table": TEST_TABLE})
+    assert len(result) == 1
+    text = result[0].text
+    assert TEST_TABLE in text
+    assert "строк" in text or "rows" in text.lower()
+    assert "Колонка" in text
+
+
+def test_table_stats_unknown_table() -> None:
+    result = _table_stats("test", {"table": "_nonexistent_xyz"})
+    assert "не найдена" in result[0].text.lower() or "not found" in result[0].text.lower()
+
+
+# ── find_by_value tool ────────────────────────────────────────────────────
+
+
+def test_find_by_value_too_short() -> None:
+    result = _find_by_value("test", {"value": "x"})
+    assert "2 символа" in result[0].text
+
+
+def test_find_by_value_no_match() -> None:
+    result = _find_by_value("test", {"value": "ZZZZ_XYZZY_NOMATCH"})
+    assert "не найдено" in result[0].text
+
+
+def test_find_by_value_filtered_table() -> None:
+    result = _find_by_value("test", {"value": "test", "table": TEST_TABLE})
+    assert len(result) == 1
+    text = result[0].text
+    # Should find matches or show "not found" — both are valid outcomes
+    assert isinstance(text, str)
+
+
+# ── config_diff_detail tool ──────────────────────────────────────────────
+
+
+def test_config_diff_detail_unknown() -> None:
+    result = _config_diff_detail("MessageCenter", {"uuid": "00000000-0000-0000-0000-000000000000"})
+    assert "не найден" in result[0].text or "not found" in result[0].text
+
+
+def test_config_diff_detail_live_only() -> None:
+    """UUID that exists only in config (live)."""
+    result = _config_diff_detail("MessageCenter", {"uuid": "001ee925-45d3-4147-9491-f5043eaa3694"})
+    text = result[0].text
+    assert "config" in text.lower()
+    assert "UUID" in text or "Объект" in text
+
+
+def test_config_diff_detail_pending_only() -> None:
+    """UUID that exists only in configsave (pending)."""
+    result = _config_diff_detail("MessageCenter", {"uuid": "447c14df-7b63-4739-a08e-cb81f1e24394"})
+    text = result[0].text
+    assert "configsave" in text or "pending" in text.lower()
+    assert "447c14df" in text
+
+
+# ── orphaned_records tool ─────────────────────────────────────────────────
+
+
+def test_orphaned_records_no_filter() -> None:
+    result = _orphaned_records("MessageCenter", {})
+    assert len(result) == 1
+    text = result[0].text
+    # May find orphaned records or not — either is valid
+    assert isinstance(text, str) and len(text) > 0
+
+
+def test_orphaned_records_filtered() -> None:
+    result = _orphaned_records("MessageCenter", {"table": "_reference53"})
+    assert len(result) == 1
+    text = result[0].text
+    assert isinstance(text, str) and len(text) > 0
 
 
 # ── error handling ────────────────────────────────────────────────────────
