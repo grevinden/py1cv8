@@ -819,6 +819,176 @@ async def handle_list_tools() -> list[Tool]:
                 "required": ["dbname", "name"],
             },
         ),
+        Tool(
+            name="explain_object",
+            description=(
+                "Комбинированный анализ объекта 1С: метаданные + связи + примеры данных. "
+
+                "ИСПОЛЬЗУЙ ЭТОТ МЕТОД, КОГДА:\n"
+                "- Нужно быстро понять, что за объект и как он устроен.\n"
+                "- Пользователь спрашивает «расскажи про этот объект».\n"
+                "- Нужно одним вызовом получить полную картину: структуру, связи, данные.\n"
+
+                "РЕЗУЛЬТАТ СОДЕРЖИТ:\n"
+                "- Название, синоним, категорию, основную таблицу.\n"
+                "- Колонки и подтаблицы.\n"
+                "- Связи с другими таблицами (входящие/исходящие).\n"
+                "- Примеры данных (до 3 записей).\n"
+                "- Ключевую бизнес-логику (проведение, иерархия, типы номеров).\n"
+
+                "ПРИМЕРЫ:\n"
+                "- explain_object('_document209') — полный разбор документа Уведомления\n"
+                "- explain_object('_reference53') — разбор справочника Алгоритмы\n"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dbname": {
+                        "type": "string",
+                        "enum": AVAILABLE_DBS,
+                        "description": f"Доступны: {', '.join(AVAILABLE_DBS)}.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "Имя объекта для анализа. "
+                            "Может быть: именем таблицы (_reference53), "
+                            "техническим именем (ирАлгоритмы), "
+                            "русским синонимом (Алгоритмы) или UUID."
+                        ),
+                    },
+                },
+                "required": ["dbname", "name"],
+            },
+        ),
+        Tool(
+            name="get_notification_analytics",
+            description=(
+                "Аналитика по уведомлениям MessageCenter: статистика отправки, "
+                "доставки, распределение по каналам. "
+
+                "ИСПОЛЬЗУЙ ЭТОТ МЕТОД, КОГДА:\n"
+                "- Нужно узнать сколько уведомлений отправлено.\n"
+                "- Нужно увидеть распределение по каналам и статусам.\n"
+                "- Нужна статистика за период.\n"
+
+                "РЕЗУЛЬТАТ СОДЕРЖИТ:\n"
+                "- Общее количество уведомлений.\n"
+                "- Статусы проведения.\n"
+                "- Топ каналов отправки.\n"
+                "- Распределение по дням.\n"
+                "- Количество подписок и каналов.\n"
+
+                "ПАРАМЕТРЫ:\n"
+                "- start_date / end_date (опционально) — фильтр по дате в формате 'ГГГГ-ММ-ДД'.\n"
+
+                "ПРИМЕРЫ:\n"
+                "- get_notification_analytics() — полная статистика\n"
+                "- get_notification_analytics(start_date='2025-01-01') — за период\n"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dbname": {
+                        "type": "string",
+                        "enum": AVAILABLE_DBS,
+                        "description": f"Доступны: {', '.join(AVAILABLE_DBS)}.",
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Начало периода в формате 'ГГГГ-ММ-ДД' (опционально).",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "Конец периода в формате 'ГГГГ-ММ-ДД' (опционально).",
+                    },
+                },
+                "required": ["dbname"],
+            },
+        ),
+        Tool(
+            name="search_bsl_code",
+            description=(
+                "Поиск фрагмента текста во всех BSL-модулях конфигурации. "
+
+                "ИСПОЛЬЗУЙ ЭТОТ МЕТОД, КОГДА:\n"
+                "- Нужно найти, где используется функция или переменная.\n"
+                "- Нужно найти все модули, работающие с определённым объектом.\n"
+                "- Пользователь спрашивает «найди в коде, где вызывается X».\n"
+
+                "РЕЗУЛЬТАТ СОДЕРЖИТ:\n"
+                "- Список модулей, где найден текст.\n"
+                "- Контекст с совпадением (строка и окружение).\n"
+                "- Количество совпадений в каждом модуле.\n"
+
+                "ПАРАМЕТРЫ:\n"
+                "- query — текст для поиска (минимум 2 символа).\n"
+                "- max_results — максимум результатов (до 100, по умолч. 20).\n"
+
+                "ПРИМЕРЫ:\n"
+                "- search_bsl_code(query='Получатели') — поиск по получателям\n"
+                "- search_bsl_code(query='ОтправитьУведомление') — поиск функции\n"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dbname": {
+                        "type": "string",
+                        "enum": AVAILABLE_DBS,
+                        "description": f"Доступны: {', '.join(AVAILABLE_DBS)}.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Текст для поиска в BSL-коде (минимум 2 символа).",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "Максимум результатов (до 100).",
+                    },
+                },
+                "required": ["dbname", "query"],
+            },
+        ),
+        Tool(
+            name="search_1c_queries",
+            description=(
+                "Поиск 1С-запросов в BSL-модулях с переводом в SQL. "
+
+                "ИСПОЛЬЗУЙ ЭТОТ МЕТОД, КОГДА:\n"
+                "- Нужно найти, какой модуль формирует определённый SQL-запрос.\n"
+                "- Нужно понять, как работает бизнес-логика на уровне 1С-запросов.\n"
+
+                "РЕЗУЛЬТАТ СОДЕРЖИТ:\n"
+                "- Модули, где найден текст.\n"
+                "- Извлечённые 1С-запросы с переводом в SQL.\n"
+                "- Параметры запросов.\n"
+
+                "ПАРАМЕТРЫ:\n"
+                "- query — текст для поиска в коде.\n"
+                "- max_results — максимум результатов (до 50, по умолч. 10).\n"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dbname": {
+                        "type": "string",
+                        "enum": AVAILABLE_DBS,
+                        "description": f"Доступны: {', '.join(AVAILABLE_DBS)}.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Текст для поиска в BSL-коде (минимум 2 символа).",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "Максимум результатов (до 50).",
+                    },
+                },
+                "required": ["dbname", "query"],
+            },
+        ),
     ]
 
 
@@ -840,6 +1010,14 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
         return _get_bsl_code(dbname, arguments)
     elif name == "get_relationship_map":
         return _get_relationship_map(dbname, arguments)
+    elif name == "explain_object":
+        return _explain_object(dbname, arguments)
+    elif name == "get_notification_analytics":
+        return _get_notification_analytics(dbname, arguments)
+    elif name == "search_bsl_code":
+        return _search_bsl_code(dbname, arguments)
+    elif name == "search_1c_queries":
+        return _search_1c_queries(dbname, arguments)
     raise ValueError(f"Unknown tool: {name}")
 
 
@@ -1250,6 +1428,370 @@ def _get_relationship_map(dbname: str, args: dict) -> list[TextContent]:
         type="text",
         text=json.dumps(result, ensure_ascii=False, indent=2),
     )]
+
+
+# ── New tool helpers ──────────────────────────────────────────────────────
+
+
+def _sample_data_for_table(dbname: str, table_name: str, limit: int = 3) -> list[dict] | None:
+    """Fetch sample rows from a table for explain_object."""
+    from py1cv8.db import get_session
+
+    try:
+        session = get_session(dbname)
+        try:
+            result = session.execute(text(f"SELECT * FROM {table_name} LIMIT {limit}"))
+            cols = list(result.keys())
+            rows = [{c: _serialize(r[c]) for c in cols} for r in result.mappings().all()]
+            return rows
+        except Exception:
+            return None
+        finally:
+            session.close()
+    except Exception:
+        return None
+
+
+def _explain_object(dbname: str, args: dict) -> list[TextContent]:
+    """Combined analysis: metadata + relationships + sample data."""
+    name = args.get("name", "").strip()
+    if not name:
+        return [TextContent(type="text", text="Provide a name to analyze.")]
+
+    # 1. Full object analysis
+    analysis_result = _analyze_object(dbname, {"name": name})
+    analysis = json.loads(analysis_result[0].text)
+
+    if analysis.get("count", 0) == 0:
+        return analysis_result
+
+    obj = analysis["objects"][0]
+
+    # 2. Relationships
+    rels_result = _get_relationship_map(dbname, {"name": obj.get("main_table", name)})
+    rels = json.loads(rels_result[0].text)
+
+    # 3. Sample data
+    main_table = obj.get("main_table", "")
+    samples = _sample_data_for_table(dbname, main_table) if main_table else None
+
+    # 4. Build explanation
+    explanation_parts = []
+
+    # Header
+    tech_name = obj.get("tech_name", "?")
+    display_ru = obj.get("display_ru", "")
+    category = obj.get("category", "")
+    header = f"{tech_name}"
+    if display_ru:
+        header += f" ({display_ru})"
+    header += f" — {category}"
+    explanation_parts.append(header)
+
+    # Structure
+    cols = obj.get("columns", [])
+    sub_tables = obj.get("sub_tables", {})
+    col_names = [c["name"] for c in cols]
+    explanation_parts.append(f"\nТаблица: {main_table} ({len(cols)} колонок, {len(sub_tables)} подтаблиц)")
+    explanation_parts.append(f"Колонки: {', '.join(col_names[:10])}{'...' if len(col_names) > 10 else ''}")
+
+    # Relationships
+    outgoing = rels.get("outgoing_refs", [])
+    incoming = rels.get("incoming_refs", [])
+    if outgoing:
+        out_targets = [r.get("target_table", "?") for r in outgoing[:5]]
+        explanation_parts.append(f"→ Ссылается на: {', '.join(out_targets)}{'...' if len(outgoing) > 5 else ''}")
+    if incoming:
+        in_sources = [r.get("source_table", "?") for r in incoming[:5]]
+        explanation_parts.append(f"← Ссылаются на неё: {', '.join(in_sources)}{'...' if len(incoming) > 5 else ''}")
+
+    # Sample data
+    if samples:
+        explanation_parts.append(f"\nПримеры данных ({len(samples)} записей):")
+        for i, row in enumerate(samples):
+            vals = [f"{k}={v}" for k, v in list(row.items())[:6] if v is not None]
+            explanation_parts.append(f"  [{i + 1}] {', '.join(vals[:4])}")
+
+    # Metadata detail
+    meta = obj.get("metadata", {})
+    biz = meta.get("business_logic", {})
+    if biz:
+        biz_str = ", ".join(f"{k}={v}" for k, v in biz.items())
+        explanation_parts.append(f"\nБизнес-логика: {biz_str}")
+
+    text_out = "\n".join(explanation_parts)
+
+    return [TextContent(type="text", text=text_out)]
+
+
+def _get_notification_analytics(dbname: str, args: dict) -> list[TextContent]:
+    """Аналитика по уведомлениям: статистика отправки, доставки, ошибок."""
+    start_date = args.get("start_date", "")
+    end_date = args.get("end_date", "")
+
+    from py1cv8.db import get_session
+
+    parts = []
+    date_filter = ""
+    if start_date and end_date:
+        date_filter = f"AND d._date_time >= '{start_date}'::timestamp AND d._date_time < ('{end_date}'::timestamp + INTERVAL '1 day')"
+    elif start_date:
+        date_filter = f"AND d._date_time >= '{start_date}'::timestamp"
+    elif end_date:
+        date_filter = f"AND d._date_time < ('{end_date}'::timestamp + INTERVAL '1 day')"
+
+    session = get_session(dbname)
+    try:
+        # 1. Total count
+        result = session.execute(text(
+            "SELECT COUNT(*) AS total FROM _document209 d WHERE 1=1 " + date_filter
+        ))
+        total = result.scalar() or 0
+        parts.append(f"Всего уведомлений: {total}")
+
+        # 2. Posted vs unposted
+        result = session.execute(text(
+            "SELECT _posted, COUNT(*) AS cnt FROM _document209 d WHERE 1=1 "
+            + date_filter + " GROUP BY _posted ORDER BY _posted"
+        ))
+        parts.append("По статусу проведения:")
+        for row in result.all():
+            status = "Проведено" if row[0] else "Не проведено"
+            parts.append(f"  {status}: {row[1]}")
+
+        # 3. By channel
+        result = session.execute(text(
+            "SELECT ch._code AS channel, COUNT(*) AS cnt "
+            "FROM _document209 d "
+            "LEFT JOIN _reference132 ch ON d._fld246rref = ch._idrref "
+            "WHERE 1=1 " + date_filter
+            + " GROUP BY ch._code ORDER BY cnt DESC LIMIT 10"
+        ))
+        any_channel = False
+        for row in result.all():
+            if not any_channel:
+                parts.append("По каналам отправки:")
+                any_channel = True
+            parts.append(f"  {row[0] or '(без канала)'}: {row[1]}")
+        if not any_channel:
+            parts.append("По каналам отправки: нет данных")
+
+        # 4. By date
+        result = session.execute(text(
+            "SELECT _date_time::date AS dt, COUNT(*) AS cnt "
+            "FROM _document209 d "
+            "WHERE 1=1 " + date_filter
+            + " GROUP BY dt ORDER BY dt DESC LIMIT 14"
+        ))
+        parts.append("По дням (последние 14):")
+        for row in result.all():
+            parts.append(f"  {row[0]}: {row[1]}")
+
+        # 5. Subscriptions count
+        result = session.execute(text("SELECT COUNT(*) AS cnt FROM _inforg148"))
+        subs = result.scalar() or 0
+        active_result = session.execute(text("SELECT COUNT(*) AS cnt FROM _inforg148 WHERE _fld154 = true"))
+        active_subs = active_result.scalar() or 0
+        parts.append(f"\nПодписок всего: {subs}, активных: {active_subs}")
+
+        # 6. Channel count
+        result = session.execute(text("SELECT COUNT(*) AS cnt FROM _reference132"))
+        channels = result.scalar() or 0
+        parts.append(f"Каналов отправки: {channels}")
+
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error: {e}")]
+    finally:
+        session.close()
+
+    return [TextContent(type="text", text="\n".join(parts))]
+
+
+# ── Search BSL in ConfigStorage ─────────────────────────────────────────
+
+
+def _search_bsl_in_config(
+    dbname: str,
+    query: str,
+    max_results: int = 20,
+) -> list[dict]:
+    """Search BSL code in all ConfigStorage .0 blobs for a text pattern."""
+    from sqlalchemy import select
+
+    from py1cv8.db import get_session
+    from py1cv8.models import Config
+
+    if not query or len(query) < 2:
+        return []
+
+    reg = _loader(dbname)
+    meta_map = reg.metadata_map
+
+    # Build uuid → tech_name mapping
+    uuid_to_tech: dict[str, str] = {}
+    for uuid_val, info in meta_map.items():
+        tn = info.get("tech_name", "")
+        if tn:
+            uuid_to_tech[uuid_val] = tn
+        else:
+            uuid_to_tech[uuid_val] = uuid_val
+
+    session = get_session(dbname)
+    try:
+        # Query all .0 blobs
+        rows = session.execute(
+            select(Config)
+            .where(Config.filename.like("%.0"))
+            .order_by(Config.filename, Config.partno)
+        ).scalars().all()
+
+        # Group by filename, assemble multi-part blobs
+        blobs: dict[str, bytearray] = {}
+        for row in rows:
+            name = row.filename
+            if name not in blobs:
+                blobs[name] = bytearray()
+            if row.binarydata:
+                blobs[name].extend(row.binarydata)
+
+        query_lower = query.lower()
+        results: list[dict] = []
+        seen_uuids: set[str] = set()
+
+        for filename, raw_blob in blobs.items():
+            if len(results) >= max_results:
+                break
+
+            # Extract UUID from filename (strip .0 suffix)
+            uuid_key = filename
+            if uuid_key.endswith(".0"):
+                uuid_key = uuid_key[:-2]
+
+            if uuid_key in seen_uuids:
+                continue
+
+            dec = try_decompress(bytes(raw_blob))
+            if not dec:
+                continue
+
+            # Fast byte-level search before full text decode
+            query_bytes = query_lower.encode("utf-8")
+            if query_bytes not in dec.lower():
+                continue
+
+            # Decode and extract BSL blocks
+            blocks = extract_code_blocks(dec)
+            matching_blocks: list[dict] = []
+            for block in blocks:
+                block_lower = block.lower()
+                idx = block_lower.find(query_lower)
+                if idx < 0:
+                    continue
+                # Extract surrounding context
+                start = max(0, idx - 60)
+                end = min(len(block), idx + len(query) + 60)
+                ctx = block[start:end]
+                lines = ctx.split("\n")
+                context = "\n".join(lines[:6])
+                matching_blocks.append({
+                    "block_index": len(matching_blocks),
+                    "line_number": block[:idx].count("\n") + 1,
+                    "context": context,
+                    "block_size": len(block),
+                })
+
+            if matching_blocks:
+                tech_name = uuid_to_tech.get(uuid_key, uuid_key)
+                seen_uuids.add(uuid_key)
+                results.append({
+                    "uuid": uuid_key,
+                    "tech_name": tech_name,
+                    "matches": matching_blocks,
+                    "match_count": len(matching_blocks),
+                    "total_blocks": len(blocks),
+                })
+
+        # Sort by match count descending
+        results.sort(key=lambda r: -r["match_count"])
+        return results[:max_results]
+
+    finally:
+        session.close()
+
+
+def _search_bsl_code(dbname: str, args: dict) -> list[TextContent]:
+    """Search BSL code in all modules for a text fragment."""
+    query = args.get("query", "").strip()
+    max_results = min(args.get("max_results", 20), 100)
+
+    if not query or len(query) < 2:
+        return [TextContent(type="text", text="Provide a search query (min 2 chars).")]
+
+    results = _search_bsl_in_config(dbname, query, max_results)
+
+    if not results:
+        return [TextContent(type="text", text=f"No matches found for '{query}'.")]
+
+    parts = [f"Поиск по BSL-коду: «{query}» — найдено в {len(results)} модулях\n"]
+    for r in results:
+        parts.append(f"{r['tech_name']} ({r['uuid'][:8]}...) — {r['match_count']} совпадений")
+        for m in r["matches"][:3]:
+            parts.append(f"  Строка {m['line_number']}: {m['context'].strip()[:120]}")
+        if r["match_count"] > 3:
+            parts.append(f"  ... и ещё {r['match_count'] - 3} совпадений")
+        parts.append("")
+
+    return [TextContent(type="text", text="\n".join(parts))]
+
+
+def _search_1c_queries(dbname: str, args: dict) -> list[TextContent]:
+    """Search for 1C query patterns in BSL modules and translate them."""
+    query = args.get("query", "").strip()
+    max_results = min(args.get("max_results", 10), 50)
+
+    if not query or len(query) < 2:
+        return [TextContent(type="text", text="Provide a search query (min 2 chars).")]
+
+    # Use BSL search to find modules
+    bsl_results = _search_bsl_in_config(dbname, query, max_results)
+
+    if not bsl_results:
+        return [TextContent(type="text", text=f"No matches found for '{query}'.")]
+
+    from py1cv8.query_translator import extract_queries_from_bsl
+
+    reg = _loader(dbname)
+    resolver = _make_resolver(reg)
+    dialect = DB_DIALECT.get(dbname, "postgresql")
+
+    parts = [f"Поиск 1С-запросов: «{query}» — найдено в {len(bsl_results)} модулях\n"]
+
+    for r in bsl_results:
+        parts.append(f"{r['tech_name']} ({r['uuid'][:8]}...)")
+
+        # Re-read the full code for this module to extract queries
+        code_results = _get_bsl_code_from_db(dbname, r["uuid"])
+        if not code_results:
+            continue
+
+        for cr in code_results:
+            for block in cr.get("code_blocks", []):
+                if query.lower() not in block.lower():
+                    continue
+                try:
+                    translated = extract_queries_from_bsl(block, resolver, dialect=dialect)
+                    for q in translated.queries:
+                        parts.append(f"\n  SQL: {q.sql[:200]}")
+                        if q.parameters:
+                            parts.append(f"  Параметры: {q.parameters}")
+                        if q.note:
+                            parts.append(f"  Примечание: {q.note}")
+                except Exception:
+                    parts.append(f"  (не удалось распарсить запрос)")
+
+        parts.append("")
+
+    return [TextContent(type="text", text="\n".join(parts))]
 
 
 # ── Run ─────────────────────────────────────────────────────────────────
