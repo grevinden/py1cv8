@@ -86,6 +86,53 @@ def test_generate_db_name_vt() -> None:
     assert generate_db_name(entry, "_reference53") == "_reference53_vt59"
 
 
+def test_dbnames_category_sub() -> None:
+    """Sub-table type is classified as 'sub'."""
+    entry = DBNamesEntry(uuid="any", type_name="VT", number=1)
+    assert entry.category == "sub"
+
+
+def test_dbnames_category_companion() -> None:
+    """Companion table type is classified as 'companion'."""
+    entry = DBNamesEntry(uuid="any", type_name="ChrcSInf", number=1)
+    assert entry.category == "companion"
+
+
+def test_dbnames_category_service() -> None:
+    """Service table type is classified as 'service'."""
+    entry = DBNamesEntry(uuid="any", type_name="Bots", number=1)
+    assert entry.category == "service"
+
+
+def test_dbnames_category_service_zero_uuid() -> None:
+    """Zero UUID is classified as 'service' regardless of type."""
+    entry = DBNamesEntry(
+        uuid="00000000-0000-0000-0000-000000000000", type_name="Reference", number=1,
+    )
+    assert entry.category == "service"
+
+
+def test_get_parent_type_sub() -> None:
+    """Parent type for sub-tables is resolved correctly."""
+    from py1cv8.dbnames import get_parent_type
+    assert get_parent_type("VT", "") == "Reference"
+    assert get_parent_type("BPr", "") == "BusinessProcess"
+    assert get_parent_type("Node", "") == "ExchangePlan"
+
+
+def test_get_parent_type_companion() -> None:
+    """Parent type for companion tables is resolved correctly."""
+    from py1cv8.dbnames import get_parent_type
+    assert get_parent_type("ChrcSInf", "") == "Chrc"
+    assert get_parent_type("IntegServiceSettings", "") == "IntegrationService"
+
+
+def test_get_parent_type_unknown() -> None:
+    """Unknown type returns None."""
+    from py1cv8.dbnames import get_parent_type
+    assert get_parent_type("Unknown", "") is None
+
+
 def test_column_info() -> None:
     col = ColumnInfo(name="test", data_type="integer", nullable=True, is_pk=False, ordinal=1)
     assert col.name == "test"

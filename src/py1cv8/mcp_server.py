@@ -1737,7 +1737,10 @@ def _explain_object(dbname: str, args: dict) -> list[TextContent]:
 
     # 1. Full object analysis
     analysis_result = _analyze_object(dbname, {"name": name})
-    analysis = json.loads(analysis_result[0].text)
+    try:
+        analysis = json.loads(analysis_result[0].text)
+    except json.JSONDecodeError:
+        return analysis_result
 
     if analysis.get("count", 0) == 0:
         return analysis_result

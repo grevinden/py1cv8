@@ -11,10 +11,19 @@ from py1cv8.mcp_server import (
     _analyze_object,
     _build_db_overview,
     _config_diff_detail,
+    _explain_object,
     _find_by_value,
+    _find_changed_objects,
+    _get_bsl_code,
+    _get_config_snapshot,
+    _get_notification_analytics,
+    _get_object_config_history,
+    _get_relationship_map,
     _get_schema,
     _orphaned_records,
     _run_sql,
+    _search_1c_queries,
+    _search_bsl_code,
     _search_metadata,
     _table_stats,
 )
@@ -252,6 +261,189 @@ def test_orphaned_records_filtered() -> None:
     assert len(result) == 1
     text = result[0].text
     assert isinstance(text, str) and len(text) > 0
+
+
+# ── get_bsl_code tool ─────────────────────────────────────────────────────
+
+
+def test_get_bsl_code_empty() -> None:
+    result = _get_bsl_code("MessageCenter", {"module_name": ""})
+    assert "provide" in result[0].text.lower()
+
+
+def test_get_bsl_code_not_found() -> None:
+    result = _get_bsl_code("MessageCenter", {"module_name": "ZZZ_XYZZY_NONEXISTENT"})
+    assert "no bsl code" in result[0].text.lower()
+
+
+def test_get_bsl_code_found() -> None:
+    result = _get_bsl_code("MessageCenter", {"module_name": "ирУведомленияСервер"})
+    assert len(result) == 1
+    text = result[0].text
+    assert "Module" in text or "UUID" in text
+
+
+# ── get_relationship_map tool ─────────────────────────────────────────────
+
+
+def test_get_relationship_map_empty() -> None:
+    result = _get_relationship_map("MessageCenter", {"name": ""})
+    assert "provide" in result[0].text.lower()
+
+
+def test_get_relationship_map_unknown() -> None:
+    result = _get_relationship_map("MessageCenter", {"name": "XYZ_nonexistent"})
+    assert "not found" in result[0].text.lower()
+
+
+def test_get_relationship_map_known() -> None:
+    result = _get_relationship_map("MessageCenter", {"name": "_reference53"})
+    assert len(result) == 1
+    data = json.loads(result[0].text)
+    assert "table" in data
+    assert "outgoing_refs" in data
+    assert "incoming_refs" in data
+
+
+# ── explain_object tool ───────────────────────────────────────────────────
+
+
+def test_explain_object_empty() -> None:
+    result = _explain_object("MessageCenter", {"name": ""})
+    assert "provide" in result[0].text.lower()
+
+
+def test_explain_object_unknown() -> None:
+    result = _explain_object("MessageCenter", {"name": "XYZ_nonexistent"})
+    assert "no results" in result[0].text.lower() or "not found" in result[0].text.lower()
+
+
+def test_explain_object_known() -> None:
+    result = _explain_object("MessageCenter", {"name": "_reference53"})
+    assert len(result) == 1
+    text = result[0].text
+    assert "колонок" in text or "columns" in text.lower()
+    assert "Таблица" in text
+
+
+# ── get_notification_analytics tool ───────────────────────────────────────
+
+
+def test_notification_analytics_basic() -> None:
+    result = _get_notification_analytics("MessageCenter", {})
+    assert len(result) == 1
+    text = result[0].text
+    assert isinstance(text, str) and len(text) > 0
+
+
+def test_notification_analytics_with_dates() -> None:
+    result = _get_notification_analytics(
+        "MessageCenter", {"start_date": "2025-01-01", "end_date": "2026-12-31"},
+    )
+    assert len(result) == 1
+    text = result[0].text
+    assert isinstance(text, str)
+
+
+# ── search_bsl_code tool ──────────────────────────────────────────────────
+
+
+def test_search_bsl_code_short_query() -> None:
+    result = _search_bsl_code("MessageCenter", {"query": "x"})
+    assert "min 2 chars" in result[0].text
+
+
+def test_search_bsl_code_no_match() -> None:
+    result = _search_bsl_code("MessageCenter", {"query": "ZZZ_XYZZY_NONEXISTENT"})
+    assert "no matches" in result[0].text.lower()
+
+
+def test_search_bsl_code_found() -> None:
+    result = _search_bsl_code("MessageCenter", {"query": "Получатели", "max_results": 3})
+    assert len(result) == 1
+    text = result[0].text
+    assert "BSL" in text or "совпадений" in text
+
+
+# ── search_1c_queries tool ────────────────────────────────────────────────
+
+
+def test_search_1c_queries_short_query() -> None:
+    result = _search_1c_queries("MessageCenter", {"query": "x"})
+    assert "min 2 chars" in result[0].text
+
+
+def test_search_1c_queries_no_match() -> None:
+    result = _search_1c_queries("MessageCenter", {"query": "ZZZ_XYZZY_NONEXISTENT"})
+    assert "no matches" in result[0].text.lower()
+
+
+def test_search_1c_queries_found() -> None:
+    result = _search_1c_queries("MessageCenter", {"query": "ВЫБРАТЬ", "max_results": 2})
+    assert len(result) == 1
+    text = result[0].text
+    assert "1С" in text or "SQL" in text or "совпадений" in text
+
+
+# ── get_config_snapshot tool ──────────────────────────────────────────────
+
+
+def test_get_config_snapshot_invalid_source() -> None:
+    result = _get_config_snapshot("MessageCenter", {"source": "invalid"})
+    assert "must be" in result[0].text.lower()
+
+
+def test_get_config_snapshot_configsave() -> None:
+    result = _get_config_snapshot("MessageCenter", {"source": "configsave"})
+    assert len(result) == 1
+    text = result[0].text
+    assert "total_entries" in text or "by_category" in text
+
+
+def test_get_config_snapshot_config() -> None:
+    result = _get_config_snapshot("MessageCenter", {"source": "config"})
+    assert len(result) == 1
+    text = result[0].text
+    assert "total_entries" in text or "by_category" in text
+
+
+# ── find_changed_objects tool ─────────────────────────────────────────────
+
+
+def test_find_changed_objects_basic() -> None:
+    result = _find_changed_objects("MessageCenter", {})
+    assert len(result) == 1
+    text = result[0].text
+    assert "summary" in text or "changed" in text or "Error" in text
+
+
+# ── get_object_config_history tool ────────────────────────────────────────
+
+
+def test_get_object_config_history_no_params() -> None:
+    result = _get_object_config_history("MessageCenter", {})
+    assert "uuid или name" in result[0].text.lower()
+
+
+def test_get_object_config_history_by_unknown_name() -> None:
+    result = _get_object_config_history("MessageCenter", {"name": "XYZ_nonexistent"})
+    assert "не найден" in result[0].text or "not found" in result[0].text.lower()
+
+
+def test_get_object_config_history_by_known_uuid() -> None:
+    result = _get_object_config_history(
+        "MessageCenter", {"uuid": "001ee925-45d3-4147-9491-f5043eaa3694"},
+    )
+    assert len(result) == 1
+    text = result[0].text
+    assert "uuid" in text or "tech_name" in text or "history" in text or "note" in text
+
+
+def test_get_object_config_history_by_name() -> None:
+    result = _get_object_config_history("MessageCenter", {"name": "_reference53"})
+    assert len(result) == 1
+    text = result[0].text
+    assert "uuid" in text or "tech_name" in text or "history" in text or "note" in text
 
 
 # ── error handling ────────────────────────────────────────────────────────

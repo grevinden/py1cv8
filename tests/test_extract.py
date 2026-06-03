@@ -170,6 +170,20 @@ def test_extract_name_from_code_no_match():
     assert name is None
 
 
+def test_extract_name_from_code_skip_keyword():
+    """Quoted name containing a skip keyword should be rejected."""
+    code = 'Сообщить("Object not found");'
+    name, _ = extract_name_from_code(code)
+    assert name is None
+
+
+def test_extract_name_from_code_quoted_match():
+    """Quoted name NOT in skip keywords should be returned."""
+    code = 'Сообщить("Получатели");'
+    name, _ = extract_name_from_code(code)
+    assert name == "Получатели"
+
+
 # ── extract_type_from_configcas_blob ────────────────────────────────────────
 
 def test_extract_type_moxcel():
