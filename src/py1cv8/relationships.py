@@ -16,6 +16,35 @@ if TYPE_CHECKING:
     from py1cv8.dbnames import DBNamesEntry
     from py1cv8.schema import ObjectInfo, ServiceTableInfo
 
+# Regex: standard pattern with _ separator (case-insensitive)
+_STANDARD_REF_RE = re.compile(
+    r"^(.+?)_(rref|rtref|rrref|owner|parent|recorder|folder)$",
+    re.I,
+)
+
+# Map matched suffix to standard ref_type
+_REF_TYPE_MAP: dict[str, str] = {
+    "rref": "RRef",
+    "rtref": "RTRef",
+    "rrref": "RRef",
+    "owner": "Owner",
+    "parent": "Parent",
+    "recorder": "Recorder",
+    "folder": "Folder",
+}
+
+# Regex: _fldXXXrref (no underscore before rref)
+_FLD_REF_RE = re.compile(r"^_fld(\d+)rref$", re.I)
+
+# Regex: _fldXXX_rrref or _fldXXX_rtref (underscore before suffix)
+_FLD_SUFFIX_RE = re.compile(r"^_fld(\d+)_(rrref|rtref)$", re.I)
+
+# Regex: _owneridrref (Owner reference, lowercase — column name itself)
+_OWNER_IDRREF_RE = re.compile(r"^_owneridrref$", re.I)
+
+# Regex: _parentidrref, _folderidrref (column name itself)
+_PARENT_FOLDER_IDRREF_RE = re.compile(r"^_(parent|folder)idrref$", re.I)
+
 
 def build_relationships(
     tables: dict[str, ObjectInfo | ServiceTableInfo],
@@ -32,22 +61,59 @@ def build_relationships(
     for db_name, info in tables.items():
         refs: list[dict] = []
         for col in info.columns:
-            m = re.match(r"^(.+?)_(RRef|RTRef|Owner|Parent|Recorder|Folder)$", col.name)
-            if m:
-                prefix = m.group(1).lstrip("_")
-                ref_type = m.group(2)
-                target = _resolve_ref_target(
-                    prefix, dbnames_entries, main_table_types, uuid_to_entry,
-                )
-                refs.append({
-                    "column": col.name,
-                    "ref_type": ref_type,
-                    "target_table": target or f"_{prefix}*",
-                })
+            ref_info = _match_reference_column(col.name)
+            if ref_info is None:
+                continue
+
+            prefix, ref_type = ref_info
+            target = _resolve_ref_target(
+                prefix, dbnames_entries, main_table_types, uuid_to_entry,
+            )
+            refs.append({
+                "column": col.name,
+                "ref_type": ref_type,
+                "target_table": target if target else "",
+            })
         if refs:
             rels[db_name] = refs
 
     return rels
+
+
+def _match_reference_column(col_name: str) -> tuple[str, str] | None:
+    """Try all known reference column naming patterns.
+
+    Returns (prefix, ref_type) or None if no pattern matches.
+    """
+    # 1) Standard pattern: XXX_RRef, XXX_Owner, etc. (case-insensitive)
+    m = _STANDARD_REF_RE.match(col_name)
+    if m:
+        suffix = m.group(2).lower()
+        return m.group(1).lstrip("_"), _REF_TYPE_MAP.get(suffix, suffix.capitalize())
+
+    # 2) _fldXXXrref (field reference, no underscore before rref)
+    m = _FLD_REF_RE.match(col_name)
+    if m:
+        return f"fld{m.group(1)}", "RRef"
+
+    # 3) _fldXXX_rrref or _fldXXX_rtref
+    m = _FLD_SUFFIX_RE.match(col_name)
+    if m:
+        suffix = m.group(2)
+        ref_type = "RTRef" if suffix.lower() == "rtref" else "RRef"
+        return f"fld{m.group(1)}", ref_type
+
+    # 4) _owneridrref (exact match — column name IS the reference marker)
+    m = _OWNER_IDRREF_RE.match(col_name)
+    if m:
+        return "owner", "Owner"
+
+    # 5) _parentidrref, _folderidrref (exact match)
+    m = _PARENT_FOLDER_IDRREF_RE.match(col_name)
+    if m:
+        return m.group(1).lower(), m.group(1).capitalize()
+
+    return None
 
 
 def _resolve_ref_target(
@@ -57,10 +123,15 @@ def _resolve_ref_target(
     uuid_to_entry: dict[str, DBNamesEntry],
 ) -> str | None:
     """Resolve a column name prefix to a target table."""
-    if prefix == "ID":
+    if prefix in ("ID", "id"):
         return "_IDRRef (self)"
 
-    m = re.match(r"ref?(\d+)", prefix, re.IGNORECASE)
+    # Special prefixes that can't be resolved from column name alone
+    if prefix in ("owner", "parent", "folder"):
+        return None
+
+    # Try prefix as a reference number (RefN, refN, fldN)
+    m = re.match(r"(?:ref|fld)(\d+)", prefix, re.IGNORECASE)
     if m:
         num = int(m.group(1))
         entry = next((

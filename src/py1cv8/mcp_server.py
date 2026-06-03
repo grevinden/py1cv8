@@ -2934,8 +2934,11 @@ def _orphaned_records(dbname: str, args: dict) -> list[TextContent]:
         results: list[dict] = []
         unresolved: list[str] = []
 
-        # 1) Process columns from reg.relationships
+        # Collect ALL ref columns (from relationships + direct info_schema scan)
         scanned_tables: set[tuple[str, str]] = set()
+        need_data_resolve: list[tuple[str, str, str]] = []  # (table, col, ref_type)
+
+        # 1) Process columns from reg.relationships
         for src_table, refs in reg.relationships.items():
             if table_filter and src_table != table_filter:
                 continue
@@ -2946,9 +2949,13 @@ def _orphaned_records(dbname: str, args: dict) -> list[TextContent]:
                 col = ref.get("column", "")
                 target = ref.get("target_table", "")
                 ref_type = ref.get("ref_type", "")
-                if not col or not target:
+                if not col:
                     continue
                 scanned_tables.add((src_table, col))
+
+                if not target:
+                    need_data_resolve.append((src_table, col, ref_type))
+                    continue
 
                 try:
                     orphan_count = session.execute(
@@ -2979,8 +2986,7 @@ def _orphaned_records(dbname: str, args: dict) -> list[TextContent]:
                 except Exception:
                     continue
 
-        # 2) Discover additional ref columns directly from information_schema
-        #    (catches lowercase patterns like _fldXXXrref that relationships misses)
+        # 2) Discover additional ref columns from information_schema
         import re as _re
         ref_columns_direct: list = []
         try:
@@ -3002,17 +3008,21 @@ def _orphaned_records(dbname: str, args: dict) -> list[TextContent]:
             if table_filter and src_table != table_filter:
                 continue
 
-            # Skip columns that are just _idrref variants (PK, not refs)
-            if _re.match(r"^_.*_idrref$", col, _re.I):
-                continue
-            if _re.match(r"^_reference\d+_idrref$", col, _re.I):
-                continue
-            if _re.match(r"^_document\d+_idrref$", col, _re.I):
-                continue
-            if col == "_idrref":
+            # Skip PK-like columns
+            if _re.match(r"^_.*_idrref$|^_idrref$", col, _re.I):
                 continue
 
-            # Try to resolve target: _fldXXX...rref / _fldXXX...rrref / _fldXXX...rtref
+            # Infer ref_type from column name
+            if _re.search(r"rtref", col, _re.I):
+                ref_type = "RTRef"
+            elif _re.search(r"owner", col, _re.I):
+                ref_type = "Owner"
+            elif _re.search(r"parent", col, _re.I):
+                ref_type = "Parent"
+            else:
+                ref_type = "RRef"
+
+            # Try to resolve target by table number guess
             target = ""
             m = _re.match(r"^_fld(\d+)", col, _re.I)
             if m:
@@ -3024,40 +3034,141 @@ def _orphaned_records(dbname: str, args: dict) -> list[TextContent]:
                         break
 
             if not target:
-                unresolved.append(f"  {src_table}.{col} — не удалось определить таблицу-цель")
-                continue
-
-            info = reg.get_object_by_table(src_table)
-            src_name = info.tech_name if info and isinstance(info, ObjectInfo) else src_table
-
-            try:
-                orphan_count = session.execute(
-                    sqlt(
-                        f"SELECT COUNT(*) FROM {src_table} src "
-                        f"WHERE src.{col} IS NOT NULL "
-                        f"AND NOT EXISTS (SELECT 1 FROM {target} t WHERE t._idrref = src.{col})"
-                    )
-                ).scalar() or 0
-                if orphan_count > 0:
-                    samples = session.execute(
+                need_data_resolve.append((src_table, col, ref_type))
+            else:
+                info = reg.get_object_by_table(src_table)
+                src_name = info.tech_name if info and isinstance(info, ObjectInfo) else src_table
+                try:
+                    orphan_count = session.execute(
                         sqlt(
-                            f"SELECT src.{col} FROM {src_table} src "
+                            f"SELECT COUNT(*) FROM {src_table} src "
                             f"WHERE src.{col} IS NOT NULL "
-                            f"AND NOT EXISTS (SELECT 1 FROM {target} t WHERE t._idrref = src.{col}) "
-                            f"LIMIT 5"
+                            f"AND NOT EXISTS (SELECT 1 FROM {target} t WHERE t._idrref = src.{col})"
                         )
+                    ).scalar() or 0
+                    if orphan_count > 0:
+                        samples = session.execute(
+                            sqlt(
+                                f"SELECT DISTINCT src.{col} FROM {src_table} src "
+                                f"WHERE src.{col} IS NOT NULL "
+                                f"AND NOT EXISTS (SELECT 1 FROM {target} t WHERE t._idrref = src.{col}) "
+                                f"LIMIT 5"
+                            )
+                        ).all()
+                        results.append({
+                            "source_table": src_table,
+                            "source_name": src_name,
+                            "column": col,
+                            "ref_type": ref_type,
+                            "target_table": target,
+                            "orphan_count": orphan_count,
+                            "sample_ids": [str(r[0])[:24] for r in samples],
+                        })
+                except Exception:
+                    need_data_resolve.append((src_table, col, ref_type))
+
+        # 3) Data-based resolution: sample a value and find target via data matching.
+        #    Then verify orphan values exist in NO table (not just the guessed one).
+        data_resolved: set[tuple[str, str]] = set()
+        if need_data_resolve and not table_filter:
+            tables_with_idrref: list[str] = []
+            for t in reg.tables:
+                obj = reg.get_object_by_table(t)
+                if obj is None:
+                    continue
+                if any(c.name == "_idrref" for c in obj.columns):
+                    tables_with_idrref.append(t)
+
+            zero_uuid = bytes(16)
+
+            for src_table, col, ref_type in need_data_resolve:
+                try:
+                    row = session.execute(
+                        sqlt(
+                            f"SELECT {col} FROM {src_table} "
+                            f"WHERE {col} IS NOT NULL AND {col} != :zero LIMIT 1"
+                        ),
+                        {"zero": zero_uuid},
+                    ).first()
+                    if not row:
+                        continue
+                    sample = row[0]
+
+                    found_target = None
+                    for candidate_tbl in tables_with_idrref:
+                        if candidate_tbl == src_table:
+                            continue
+                        try:
+                            hit = session.execute(
+                                sqlt(f"SELECT 1 FROM {candidate_tbl} WHERE _idrref = :v LIMIT 1"),
+                                {"v": sample},
+                            ).first()
+                            if hit:
+                                found_target = candidate_tbl
+                                break
+                        except Exception:
+                            continue
+
+                    if not found_target:
+                        continue
+
+                    data_resolved.add((src_table, col))
+
+                    # Find candidate orphans against the guessed target
+                    orphan_candidates = session.execute(
+                        sqlt(
+                            f"SELECT DISTINCT src.{col} FROM {src_table} src "
+                            f"WHERE src.{col} IS NOT NULL AND src.{col} != :zero "
+                            f"AND NOT EXISTS (SELECT 1 FROM {found_target} t WHERE t._idrref = src.{col})"
+                        ),
+                        {"zero": zero_uuid},
                     ).all()
-                    results.append({
-                        "source_table": src_table,
-                        "source_name": src_name,
-                        "column": col,
-                        "ref_type": "RRef",
-                        "target_table": target,
-                        "orphan_count": orphan_count,
-                        "sample_ids": [str(r[0])[:24] for r in samples],
-                    })
-            except Exception:
-                continue
+
+                    if not orphan_candidates:
+                        continue
+
+                    # Verify each orphan value against ALL tables
+                    orphan_values = [r[0] for r in orphan_candidates]
+                    true_orphans = []
+
+                    for val in orphan_values:
+                        found_anywhere = False
+                        for candidate_tbl in tables_with_idrref:
+                            try:
+                                hit = session.execute(
+                                    sqlt(f"SELECT 1 FROM {candidate_tbl} WHERE _idrref = :v LIMIT 1"),
+                                    {"v": val},
+                                ).first()
+                                if hit:
+                                    found_anywhere = True
+                                    break
+                            except Exception:
+                                continue
+                        if not found_anywhere:
+                            true_orphans.append(val)
+
+                    if true_orphans:
+                        info = reg.get_object_by_table(src_table)
+                        src_name = info.tech_name if info and isinstance(info, ObjectInfo) else src_table
+                        results.append({
+                            "source_table": src_table,
+                            "source_name": src_name,
+                            "column": col,
+                            "ref_type": ref_type,
+                            "target_table": found_target,
+                            "orphan_count": len(true_orphans),
+                            "sample_ids": [str(v)[:24] for v in true_orphans[:5]],
+                        })
+                except Exception:
+                    continue
+
+            # Remaining unresolved ones that couldn't even be target-resolved
+            for src_table, col, _rt in need_data_resolve:
+                if (src_table, col) not in data_resolved:
+                    unresolved.append(f"  {src_table}.{col} — не удалось определить таблицу-цель")
+        else:
+            for src_table, col, _rt in need_data_resolve:
+                unresolved.append(f"  {src_table}.{col} — не удалось определить таблицу-цель")
 
         # ── Build output ──────────────────────────────────────────────────
         text_parts: list[str] = []
@@ -3089,8 +3200,15 @@ def _orphaned_records(dbname: str, args: dict) -> list[TextContent]:
                 "используются нестандартные имена (_fldXXXrref, _owneridrref, ...)."
             )
         if ref_columns_direct:
+            extra_count = len(ref_columns_direct) - sum(1 for _, c in ref_columns_direct if (_, c) in scanned_tables)
+            if extra_count > 0:
+                details.append(
+                    f"Через прямой обход схемы найдено дополнительно {extra_count} колонок-кандидатов."
+                )
+        if data_resolved:
             details.append(
-                f"Через прямой обход схемы найдено {len(ref_columns_direct)} колонок-кандидатов."
+                f"Из них {len(data_resolved)} разрешены через сопоставление данных, "
+                f"{len(unresolved)} остались неразрешёнными."
             )
         if unresolved:
             details.append(f"Не удалось определить таблицу-цель для {len(unresolved)} колонок:")

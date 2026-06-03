@@ -152,7 +152,7 @@ def test_build_relationships_no_refs():
 
 
 def test_build_relationships_unresolved_prefix():
-    """Unresolvable prefix gets wildcard fallback."""
+    """Unresolvable prefix gets empty target."""
     tables = {
         "_Test": _make_table_info(["Unknown123_RRef"]),
     }
@@ -161,7 +161,113 @@ def test_build_relationships_unresolved_prefix():
 
     assert "_Test" in rels
     refs = rels["_Test"]
-    assert any("_Unknown123*" in r["target_table"] for r in refs)
+    assert any(r["target_table"] == "" for r in refs)
+
+
+def test_nonstandard_fld_rref():
+    """_fldXXXrref pattern (no underscore before rref)."""
+    tables = {
+        "_Document1": _make_table_info(["_fld123rref"]),
+    }
+    entries = _make_dbnames_entries([
+        ("x-0000-0000-0000-000000000001", "Reference", 123),
+    ])
+    rels = build_relationships(tables, entries, frozenset({"Reference"}))
+    assert "_Document1" in rels
+    refs = rels["_Document1"]
+    assert any(r["column"] == "_fld123rref" for r in refs)
+    assert any(r["ref_type"] == "RRef" for r in refs)
+
+
+def test_nonstandard_fld_rrref():
+    """_fldXXX_rrref pattern (underscore before rrref)."""
+    tables = {
+        "_InfoRg1": _make_table_info(["_fld456_rrref"]),
+    }
+    entries = _make_dbnames_entries([
+        ("y-0000-0000-0000-000000000002", "Reference", 456),
+    ])
+    rels = build_relationships(tables, entries, frozenset({"Reference"}))
+    assert "_InfoRg1" in rels
+    refs = rels["_InfoRg1"]
+    assert any(r["column"] == "_fld456_rrref" for r in refs)
+    assert any(r["ref_type"] == "RRef" for r in refs)
+
+
+def test_nonstandard_fld_rtref():
+    """_fldXXX_rtref pattern."""
+    tables = {
+        "_InfoRg2": _make_table_info(["_fld789_rtref"]),
+    }
+    entries = _make_dbnames_entries([
+        ("z-0000-0000-0000-000000000003", "Document", 789),
+    ])
+    rels = build_relationships(tables, entries, frozenset({"Document"}))
+    assert "_InfoRg2" in rels
+    refs = rels["_InfoRg2"]
+    assert any(r["column"] == "_fld789_rtref" for r in refs)
+    assert any(r["ref_type"] == "RTRef" for r in refs)
+
+
+def test_nonstandard_owneridrref():
+    """_owneridrref pattern detected as Owner ref."""
+    tables = {
+        "_Reference1": _make_table_info(["_owneridrref"]),
+    }
+    entries = []
+    rels = build_relationships(tables, entries, frozenset({"Reference"}))
+    assert "_Reference1" in rels
+    refs = rels["_Reference1"]
+    assert any(r["column"] == "_owneridrref" for r in refs)
+    owner_refs = [r for r in refs if r["ref_type"] == "Owner"]
+    assert len(owner_refs) == 1
+    assert owner_refs[0]["target_table"] == ""
+
+
+def test_nonstandard_lowercase_standard():
+    """Standard pattern but lowercase (e.g. _Reference42_rref)."""
+    tables = {
+        "_Doc99": _make_table_info(["Ref42_rref"]),
+    }
+    entries = _make_dbnames_entries([
+        ("w-0000-0000-0000-000000000042", "Reference", 42),
+    ])
+    rels = build_relationships(tables, entries, frozenset({"Reference"}))
+    assert "_Doc99" in rels
+    refs = rels["_Doc99"]
+    assert any(r["column"] == "Ref42_rref" for r in refs)
+    rref_refs = [r for r in refs if r["ref_type"] == "RRef" and r["target_table"]]
+    assert len(rref_refs) == 1
+
+
+def test_nonstandard_mixed_case_rtref():
+    """Mixed case RTRef column."""
+    tables = {
+        "_AccRg1": _make_table_info(["Ref7_RtRef"]),
+    }
+    entries = _make_dbnames_entries([
+        ("v-0000-0000-0000-000000000007", "Document", 7),
+    ])
+    rels = build_relationships(tables, entries, frozenset({"Document"}))
+    assert "_AccRg1" in rels
+    refs = rels["_AccRg1"]
+    rtref_refs = [r for r in refs if r["ref_type"] == "RTRef"]
+    assert len(rtref_refs) == 1
+
+
+def test_skip_idrref():
+    """_idrref (PK) should NOT be detected as a reference."""
+    tables = {
+        "_Ref1": _make_table_info(["_idrref", "_description", "_fld42rref"]),
+    }
+    entries = _make_dbnames_entries([
+        ("u-0000-0000-0000-000000000042", "Reference", 42),
+    ])
+    rels = build_relationships(tables, entries, frozenset({"Reference"}))
+    assert "_Ref1" in rels
+    cols = [r["column"] for r in rels["_Ref1"]]
+    assert "_idrref" not in cols
+    assert "_fld42rref" in cols
 
 
 # ── _resolve_ref_target ──────────────────────────────────────────────────────
