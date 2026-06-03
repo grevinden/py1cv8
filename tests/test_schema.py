@@ -158,7 +158,7 @@ def test_schema_registry_search() -> None:
     reg.lazy_load()
     results = reg.search("reference")
     assert len(results) > 0
-    assert any("reference" in r.tech_name.lower() for r in results)
+    assert any("reference" in r.main_table.lower() for r in results)
 
 
 def test_schema_registry_summary() -> None:

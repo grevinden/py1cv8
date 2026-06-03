@@ -238,6 +238,21 @@ def _get_bsl_code_from_db(dbname: str, module_name: str) -> list[dict]:
             if q in display.lower():
                 matched_uuids.add(uuid_val)
 
+    # Also search by SchemaRegistry objects: table names, 1С names, UUIDs
+    if not matched_uuids:
+        q_clean = q.replace("_", "")
+        for obj in reg.objects.values():
+            main_table = obj.main_table.lower()
+            table_clean = main_table.lstrip("_").replace("_", "")
+            if q in main_table or q in table_clean or q_clean in table_clean:
+                matched_uuids.add(obj.uuid)
+            elif obj.tech_name and q in obj.tech_name.lower():
+                matched_uuids.add(obj.uuid)
+            elif obj.display_ru and q in obj.display_ru.lower():
+                matched_uuids.add(obj.uuid)
+            elif q in obj.uuid.lower():
+                matched_uuids.add(obj.uuid)
+
     if not matched_uuids:
         return []
 

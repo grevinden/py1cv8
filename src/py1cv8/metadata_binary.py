@@ -29,16 +29,30 @@ def parse_metadata_blob(txt: str) -> dict[str, Any] | None:
     Expected pattern in text:
       {1, 0, UUID, "TechName", {...localized names}, ...}
 
+    The UUID is the object's own UUID found in the {1,0,UUID} pattern,
+    NOT the first UUID in the text (which is the type's UUID).
+
     Returns dict with 'type_num', 'tech_name', 'display_names', or None.
     """
-    uuid_match = re.search(
-        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    # Prefer UUID from {1,0,UUID} — the object's own identity
+    obj_match = re.search(
+        r"\{1,0,([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}",
         txt,
     )
-    if not uuid_match:
-        return None
+    if obj_match:
+        uuid_val = obj_match.group(1)
+        after_uuid = txt[obj_match.end():]
+    else:
+        # Fallback: first UUID in text
+        uuid_match = re.search(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            txt,
+        )
+        if not uuid_match:
+            return None
+        uuid_val = uuid_match.group(0)
+        after_uuid = txt[uuid_match.end():]
 
-    after_uuid = txt[uuid_match.end():]
     name_match = re.search(r'"([^"]{2,120})"', after_uuid)
     if not name_match:
         return None
@@ -61,7 +75,7 @@ def parse_metadata_blob(txt: str) -> dict[str, Any] | None:
 
     display_names: dict[str, str] = {}
     for dm in re.finditer(
-        r'"(ru|en|uk)","([^"]{2,200})"', txt[uuid_match.end():],
+        r'"(ru|en|uk)","([^"]{2,200})"', after_uuid,
     ):
         lang, val = dm.group(1), dm.group(2)
         if lang not in display_names:
@@ -75,7 +89,7 @@ def parse_metadata_blob(txt: str) -> dict[str, Any] | None:
             type_num = candidate
 
     return {
-        "uuid": uuid_match.group(0),
+        "uuid": uuid_val,
         "tech_name": tech_name,
         "display_names": display_names,
         "type_num": type_num,
