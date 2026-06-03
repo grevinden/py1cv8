@@ -1,10 +1,15 @@
-"""Central configuration — credentials, paths, type maps."""
+"""Central configuration — credentials, paths, type maps.
+
+DB credentials are defaults only — override via Typer CLI ``--db-*`` options
+(which support ``PY1CV8_*`` env vars natively).  Never hardcode production
+secrets here.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-# ── DB credentials (read-only) ─────────────────────────────────────────────
+# ── DB credentials (defaults — override via CLI/env) ────────────────────────
 
 DB_HOST: str = "localhost"
 DB_PORT: int = 5433
@@ -152,3 +157,11 @@ SERVICE_TABLE_TYPES: frozenset[str] = frozenset({
 })
 
 AVAILABLE_DBS: list[str] = ["MessageCenter", "test"]
+
+# ── DB dialect registry: dbname → SQL dialect ────────────────────────────────
+# Used by query_translator and db.py to generate correct SQL per DB engine.
+
+DB_DIALECT: dict[str, str] = {
+    "MessageCenter": "postgresql",
+    "test": "postgresql",
+}

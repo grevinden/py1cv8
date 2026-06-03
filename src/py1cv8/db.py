@@ -2,8 +2,6 @@
 
 All database operations MUST go through this module.
 No raw psycopg2 connections allowed.
-
-Satisfies: contracts.database.DatabaseSessionProvider
 """
 
 from __future__ import annotations
@@ -11,19 +9,29 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from pydantic import PostgresDsn
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from py1cv8.config import DB_HOST, DB_PASS, DB_PORT, DB_USER
-
 _engines: dict[str, object] = {}
 _sessions: dict[str, sessionmaker] = {}
+_base_url: str = "postgresql+psycopg2://postgres:qwaseD12@localhost:5433"
+
+
+def set_base_url(url: PostgresDsn | str) -> None:
+    """Set the base database URL (without database name).
+
+    Must be called before any ``get_engine`` / ``get_session`` call.
+    """
+    global _base_url
+    # Clear cached engines so they reconnect with the new URL
+    _engines.clear()
+    _sessions.clear()
+    _base_url = str(url).rstrip("/")
 
 
 def _dsn(dbname: str) -> str:
-    return (
-        f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{dbname}"
-    )
+    return f"{_base_url}/{dbname}"
 
 
 def get_engine(dbname: str):
@@ -55,34 +63,19 @@ def session_scope(dbname: str) -> Iterator[Session]:
         session.close()
 
 
-# ── Class implementation (satisfies DatabaseSessionProvider contract) ────
-
-
 class PgDatabaseProvider:
-    """Read-only PostgreSQL provider via SQLAlchemy.
+    """Read-only database provider via SQLAlchemy.
 
     Satisfies: contracts.database.DatabaseSessionProvider
     """
 
-    def __init__(
-        self,
-        host: str = DB_HOST,
-        port: int = DB_PORT,
-        user: str = DB_USER,
-        password: str = DB_PASS,
-    ) -> None:
-        self._host = host
-        self._port = port
-        self._user = user
-        self._password = password
+    def __init__(self, base_url: PostgresDsn | str) -> None:
+        self._base_url = str(base_url).rstrip("/")
         self._engines: dict[str, object] = {}
         self._sessions: dict[str, sessionmaker] = {}
 
     def _dsn(self, dbname: str) -> str:
-        return (
-            f"postgresql+psycopg2://{self._user}:{self._password}"
-            f"@{self._host}:{self._port}/{dbname}"
-        )
+        return f"{self._base_url}/{dbname}"
 
     def get_session(self, dbname: str) -> Session:
         """Open a read-only session for *dbname*."""

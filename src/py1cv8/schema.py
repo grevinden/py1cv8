@@ -27,6 +27,7 @@ from py1cv8.config import (
     SUB_TABLE_TYPES,
     TYPE_MAP,
 )
+from py1cv8.config_versions import parse_config_dump_info
 from py1cv8.contracts.database import DatabaseSessionProvider
 from py1cv8.contracts.dbnames import DBNamesProvider
 from py1cv8.contracts.metadata import MetadataProvider
@@ -48,7 +49,7 @@ from py1cv8.models import (
 
 def _default_db_provider() -> DatabaseSessionProvider:
     from py1cv8.db import PgDatabaseProvider
-    return PgDatabaseProvider()
+    return PgDatabaseProvider("postgresql+psycopg2://postgres:qwaseD12@localhost:5433")
 
 
 def _default_metadata_provider() -> MetadataProvider:
@@ -252,6 +253,8 @@ class SchemaRegistry:
         self.tables: dict[str, ObjectInfo | ServiceTableInfo] = {}
         self.dbnames_entries: list[DBNamesEntry] = []
         self.relationships: dict[str, list[dict]] = {}
+        self.config_versions: dict[str, str] = {}
+        self.metadata_map: dict[str, dict] = {}
 
     def lazy_load(self) -> None:
         if self._loaded:
@@ -269,6 +272,7 @@ class SchemaRegistry:
 
         # 3. Read config metadata via injected metadata provider
         meta_map = self._meta.build_metadata_map(self.dbname)
+        self.metadata_map = meta_map
 
         # 4. Index DBNames entries (4-way classification)
         main_entries: list[DBNamesEntry] = []
@@ -440,6 +444,16 @@ class SchemaRegistry:
                 if ru:
                     obj.display_ru = ru
 
+        # 9c. Load config versions from ConfigDumpInfo.xml
+        from contextlib import suppress
+        for candidate in (
+            EXPORT_DIR / "ConfigDumpInfo.xml",
+            EXPORT_DIR / "test_database" / "ConfigDumpInfo.xml",
+        ):
+            if candidate.is_file():
+                with suppress(Exception):
+                    self.config_versions.update(parse_config_dump_info(candidate))
+
         # 10. Build relationship graph
         entries_as_dicts = [
             {"uuid": e.uuid, "type_name": e.type_name, "number": e.number}
@@ -482,6 +496,22 @@ class SchemaRegistry:
             ):
                 results.append(obj)
         return results
+
+    def stale_uuids(self, new_versions: dict[str, str]) -> list[str]:
+        """Return object UUIDs whose configVersion changed.
+
+        Compares *new_versions* (from a fresh read of ConfigDumpInfo.xml)
+        against the stored ``self.config_versions``.  Returns base UUIDs
+        (without sub-ID suffix) that differ AND exist in ``self.objects``.
+        """
+        stale: set[str] = set()
+        for full_id, new_cver in new_versions.items():
+            old_cver = self.config_versions.get(full_id)
+            if old_cver is None or old_cver != new_cver:
+                base = full_id.split(".")[0].lower()
+                if base in self.objects:
+                    stale.add(base)
+        return sorted(stale)
 
     @property
     def summary(self) -> dict:

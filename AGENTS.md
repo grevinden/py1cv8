@@ -27,6 +27,7 @@ src/py1cv8/
 ├── db.py                # Подключение к БД (read-only)
 ├── compress.py          # zlib-декомпрессия, детекция кодировок, BOM-сплит
 ├── bsl.py               # Детекция BSL-ключевых слов, извлечение имени из кода
+├── query_translator.py  # Парсинг 1C-запросов из BSL, трансляция → PostgreSQL/MSSQL SQL через SQLAlchemy expression language + @compiles
 ├── metadata_binary.py   # Парсинг {1,\n{type} блобов config, MOXCEL-заголовки
 ├── metadata_xml.py      # Парсер XML-метаданных .export_from_1c/ (модели, Type Bridge)
 ├── dbnames.py           # DBNames-парсинг, генерация имён таблиц
@@ -40,13 +41,14 @@ src/py1cv8/
 ### DB credentials
 - Хост: `localhost:5433`, пользователь: `postgres`, пароль: `qwaseD12`
 - Базы: `MessageCenter` (config) и `test` (configcas)
+- Диалекты: `DB_DIALECT` в config.py (dbname → ``"postgresql"`` / ``"mssql"``)
 - Read-only: никаких INSERT/UPDATE/DELETE
 
 ### Запуск
 ```bash
 python -m py1cv8 mcp          # MCP-сервер для LLM
 python -m py1cv8 schema [db]  # Сводка схемы БД
-python -m pytest tests/       # 83 теста
+python -m pytest tests/       # 101 тест
 python -m ruff check src/py1cv8/
 python -m mypy src/py1cv8/
 ```
@@ -206,6 +208,47 @@ python -m mypy src/py1cv8/
 type_num извлекается из бинарного блоба config/configcas:
 1. **MOXCEL-заголовок**: байты `MOXCEL\x00\x08\x00\x01\x00\xNN\x00` (uint16 LE на позиции 11-12)
 2. **Паттерн `{1,\n{type}`**: `{1,\n{N` где N — число 0-99
+
+### query_translator.py
+
+Парсит 1C-запросы из BSL-кода и переводит их в PostgreSQL/MSSQL SQL.
+
+Использует SQLAlchemy expression language + ``@compiles`` для
+диалект-зависимых конструкций (EXTRACT vs YEAR, DATE_TRUNC vs DATETRUNC,
+LIMIT vs TOP, INTERVAL vs DATEADD, TRUE/FALSE vs 1/0 и т.д.).
+
+**Основные функции:**
+- `extract_queries_from_bsl(bsl_text, resolver, dialect="postgresql")`
+  — извлекает все `ТекстЗапроса = "..."` блоки, переводит каждый
+- `translate_1c_query(one_c_sql, table_resolver, dialect="postgresql")`
+  — трансляция одного 1C-запроса в SQL
+
+**TranslatedQuery:**
+- `.sql` — готовый SQL под указанный диалект (строка)
+- `.parameters` — список `:param` (SQLAlchemy bind params)
+- `.referenced_tables` — разрешённые таблицы
+- `.virtual_tables` — найденные виртуальные таблицы
+- `.is_dynamic` — true если конкатенация/ПолноеИмя()
+- `.note` — пояснения (virtual tables, dynamic, concat)
+
+**Трансляции:**
+| 1C-конструкция | PostgreSQL | MSSQL |
+|----------------|------------|-------|
+| `ВЫБРАТЬ ПЕРВЫЕ N` | `LIMIT N` | `SELECT TOP N` |
+| `ГОД(x)` | `EXTRACT(YEAR FROM x)` | `YEAR(x)` |
+| `МЕСЯЦ(x)` | `EXTRACT(MONTH FROM x)` | `MONTH(x)` |
+| `ДЕНЬ(x)` | `EXTRACT(DAY FROM x)` | `DAY(x)` |
+| `ЧАС(x)` | `EXTRACT(HOUR FROM x)` | `DATEPART(hour, x)` |
+| `НАЧАЛОПЕРИОДА(d, Период)` | `DATE_TRUNC('period', d)` | `DATETRUNC(period, d)` |
+| `ДОБАВИТЬКДАТЕ(d, N, Период)` | `(d + INTERVAL 'N period')` | `DATEADD(period, N, d)` |
+| `РАЗНОСТЬДАТ(d1, d2, Период)` | `DATE_PART('period', d2 - d1)` | `DATEDIFF(period, d1, d2)` |
+| `ДАТАВРЕМЯ(y,m,d)` | `MAKE_DATE(y,m,d)` | `DATEFROMPARTS(y,m,d)` |
+| `ИСТИНА/ЛОЖЬ` | `TRUE/FALSE` | `1/0` |
+| `ЕСТЬNULL(a, b)` | `COALESCE(a, b)` | `COALESCE(a, b)` |
+| `ССЫЛКА` (как keyword) | `IS OF` | `IS OF` |
+| `&ИмяПараметра` | `:ИмяПараметра` | `:ИмяПараметра` (SQLAlchemy bindparam) |
+
+**Resolver:** функция `(obj_type, obj_name) -> main_table | None`, маппит 1C-объекты на SQL-таблицы.
 
 ### Непокрытые типы (нет type_num без БД)
 25 типов без известного type_num: `Bots`, `BusinessProcesses`, `Catalogs`, `CommandGroups`, `CommonAttributes`, `CommonCommands`, `CommonPictures`, `DefinedTypes`, `DocumentJournals`, `DocumentNumerators`, `EventSubscriptions`, `ExchangePlans`, `FilterCriteria`, `FunctionalOptions`, `FunctionalOptionsParameters`, `HTTPServices`, `IntegrationServices`, `Languages`, `ScheduledJobs`, `SessionParameters`, `SettingsStorages`, `Tasks`, `WebServices`, `WebSocketClients`, `XDTOPackages`

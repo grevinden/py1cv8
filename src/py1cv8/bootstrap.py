@@ -6,7 +6,7 @@ Test code may bypass this and wire mocks/stubs directly.
 
 from __future__ import annotations
 
-from py1cv8.db import PgDatabaseProvider
+from py1cv8.db import PgDatabaseProvider, set_base_url
 from py1cv8.dbnames import DBNamesProviderImpl
 from py1cv8.metadata_binary import ConfigMetadataProvider
 from py1cv8.metadata_xml import XmlMetadataProviderImpl
@@ -19,7 +19,8 @@ from py1cv8.schema import SchemaLoader
 class _Providers:
     """Lazy singleton container for all DI providers."""
 
-    def __init__(self) -> None:
+    def __init__(self, base_url: str) -> None:
+        self._base_url = base_url
         self._db: PgDatabaseProvider | None = None
         self._meta: ConfigMetadataProvider | None = None
         self._xml: XmlMetadataProviderImpl | None = None
@@ -29,8 +30,7 @@ class _Providers:
     @property
     def db(self) -> PgDatabaseProvider:
         if self._db is None:
-            from py1cv8.config import DB_HOST, DB_PASS, DB_PORT, DB_USER
-            self._db = PgDatabaseProvider(DB_HOST, DB_PORT, DB_USER, DB_PASS)
+            self._db = PgDatabaseProvider(self._base_url)
         return self._db
 
     @property
@@ -58,39 +58,48 @@ class _Providers:
         return self._rels
 
 
-_providers = _Providers()
+_providers: _Providers | None = None
+
+
+def _get_providers(base_url: str) -> _Providers:
+    global _providers
+    if _providers is None:
+        _providers = _Providers(base_url)
+    return _providers
 
 
 # ── Public factories ────────────────────────────────────────────────────
 
 
-def create_schema_loader() -> SchemaLoader:
+def create_schema_loader(base_url: str) -> SchemaLoader:
     """Create a SchemaLoader wired with production providers."""
+    p = _get_providers(base_url)
     return SchemaLoader(
-        db_provider=_providers.db,
-        metadata_provider=_providers.metadata,
-        xml_provider=_providers.xml,
-        dbnames_provider=_providers.dbnames,
-        relationship_builder=_providers.relationships,
+        db_provider=p.db,
+        metadata_provider=p.metadata,
+        xml_provider=p.xml,
+        dbnames_provider=p.dbnames,
+        relationship_builder=p.relationships,
     )
 
 
-def create_mcp_loader() -> SchemaLoader:
+def create_mcp_loader(base_url: str) -> SchemaLoader:
     """Alias for create_schema_loader — used by MCP server."""
-    return create_schema_loader()
+    set_base_url(base_url)
+    return create_schema_loader(base_url)
 
 
-def run_mcp() -> None:
+def run_mcp(base_url: str) -> None:
     """Run the MCP server with DI-wired schema loader."""
     from py1cv8.mcp_server import run
-    run(schema_loader=create_schema_loader())
+    run(schema_loader=create_mcp_loader(base_url))
 
 
-def run_schema_summary(dbname: str) -> dict:
+def run_schema_summary(dbname: str, base_url: str) -> dict:
     """Print and return schema summary for a database."""
     import json
 
-    loader = create_schema_loader()
+    loader = create_schema_loader(base_url)
     reg = loader(dbname)
     summary = reg.summary
     print(json.dumps(summary, ensure_ascii=False, indent=2))

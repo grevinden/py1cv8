@@ -16,8 +16,10 @@ from py1cv8.mcp_server import (
 )
 from py1cv8.schema import ObjectInfo
 
+_TEST_DB_URL = "postgresql+psycopg2://postgres:qwaseD12@localhost:5433"
+
 # Discover a real ObjectInfo main table for the test DB
-_loader_for_discovery = create_schema_loader()
+_loader_for_discovery = create_schema_loader(_TEST_DB_URL)
 _reg = _loader_for_discovery("test")
 TEST_TABLE = next(
     (t for t, i in _reg.tables.items() if isinstance(i, ObjectInfo)),
@@ -33,7 +35,7 @@ def _setup_loader():
     import py1cv8.mcp_server as mcp
 
     original = mcp._loader
-    mcp._loader = create_schema_loader()
+    mcp._loader = create_schema_loader(_TEST_DB_URL)
     yield
     mcp._loader = original
 
