@@ -1004,6 +1004,113 @@ async def handle_list_tools() -> list[Tool]:
                 "required": ["dbname", "query"],
             },
         ),
+        Tool(
+            name="get_config_snapshot",
+            description=(
+                "Показывает полный снимок конфигурации 1С из configsave.versions. "
+
+                "ИСПОЛЬЗУЙ ЭТОТ МЕТОД, КОГДА:\n"
+                "- Нужно увидеть, какие объекты входят в сохранённую (ещё не применённую) "
+                "конфигурацию.\n"
+                "- Нужно узнать версию каждого объекта конфигурации.\n"
+                "- Нужно получить сводку по категориям объектов.\n"
+
+                "РЕЗУЛЬТАТ СОДЕРЖИТ:\n"
+                "- Общее количество объектов и под-объектов.\n"
+                "- Распределение по категориям (справочники, документы, регистры и т.д.).\n"
+                "- Список всех объектов с UUID, именем, configVersion.\n"
+                "- Временная метка сохранения.\n"
+
+                "ПАРАМЕТРЫ:\n"
+                "- source (опционально) — откуда читать: 'configsave' (по умолч.) или 'config'.\n"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dbname": {
+                        "type": "string",
+                        "enum": AVAILABLE_DBS,
+                        "description": f"Доступны: {', '.join(AVAILABLE_DBS)}.",
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Откуда читать: 'configsave' (по умолчанию, ожидающие изменения) или 'config' (текущее состояние).",
+                        "default": "configsave",
+                    },
+                },
+                "required": ["dbname"],
+            },
+        ),
+        Tool(
+            name="find_changed_objects",
+            description=(
+                "Сравнивает configsave (ожидающие изменения) и config (текущее состояние), "
+                "показывая что изменилось. "
+
+                "ИСПОЛЬЗУЙ ЭТОТ МЕТОД, КОГДА:\n"
+                "- Разработчик внёс изменения в конфигурацию, но ещё не применил их.\n"
+                "- Нужно оценить объём и характер будущих изменений.\n"
+                "- Нужно понять, какие объекты были изменены, добавлены или удалены.\n"
+                "- Нужно провести ревью изменений перед применением.\n"
+
+                "РЕЗУЛЬТАТ СОДЕРЖИТ:\n"
+                "- Сводку: сколько объектов изменилось, добавлено, удалено.\n"
+                "- Список изменённых объектов: UUID, имя, старая и новая версии.\n"
+                "- Список UUID новых и удалённых объектов.\n"
+
+                "ПРИМЕРЫ:\n"
+                "- find_changed_objects() — все ожидающие изменения.\n"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dbname": {
+                        "type": "string",
+                        "enum": AVAILABLE_DBS,
+                        "description": f"Доступны: {', '.join(AVAILABLE_DBS)}.",
+                    },
+                },
+                "required": ["dbname"],
+            },
+        ),
+        Tool(
+            name="get_object_config_history",
+            description=(
+                "Показывает историю configVersion для конкретного объекта. "
+
+                "ИСПОЛЬЗУЙ ЭТОТ МЕТОД, КОГДА:\n"
+                "- Нужно отследить, менялся ли объект в новой конфигурации.\n"
+                "- Нужно сравнить версию объекта в live и в pending.\n"
+                "- Нужно найти различия в под-объектах (модули, формы).\n"
+
+                "РЕЗУЛЬТАТ СОДЕРЖИТ:\n"
+                "- Все записи о версиях объекта из config (live) и configsave (pending).\n"
+                "- Разбивка по под-объектам (сам объект, модуль, форма).\n"
+                "- Список различий между live и pending.\n"
+
+                "ПАРАМЕТРЫ:\n"
+                "- uuid или name — идентификатор объекта.\n"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dbname": {
+                        "type": "string",
+                        "enum": AVAILABLE_DBS,
+                        "description": f"Доступны: {', '.join(AVAILABLE_DBS)}.",
+                    },
+                    "uuid": {
+                        "type": "string",
+                        "description": "UUID объекта (полный или фрагмент).",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Имя объекта (tech_name или display_ru). Альтернатива uuid.",
+                    },
+                },
+                "required": ["dbname"],
+            },
+        ),
     ]
 
 
@@ -1033,6 +1140,12 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
         return _search_bsl_code(dbname, arguments)
     elif name == "search_1c_queries":
         return _search_1c_queries(dbname, arguments)
+    elif name == "get_config_snapshot":
+        return _get_config_snapshot(dbname, arguments)
+    elif name == "find_changed_objects":
+        return _find_changed_objects(dbname, arguments)
+    elif name == "get_object_config_history":
+        return _get_object_config_history(dbname, arguments)
     raise ValueError(f"Unknown tool: {name}")
 
 
@@ -1807,6 +1920,491 @@ def _search_1c_queries(dbname: str, args: dict) -> list[TextContent]:
         parts.append("")
 
     return [TextContent(type="text", text="\n".join(parts))]
+
+
+# ── Config versions ──────────────────────────────────────────────────────
+
+
+def _parse_versions_blob(txt: str) -> dict[str, str]:
+    """Parse versions blob {1,N,"",uuid,"ver",...} into {entry_uuid: version_string}."""
+    import re
+    pat = re.compile(
+        r'([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})'
+        r',"([^"]*)"'
+    )
+    return {m.group(1).lower(): m.group(2) for m in pat.finditer(txt)}
+
+
+def _read_versions_blob(session, table: str) -> dict[str, str] | None:
+    """Read and parse the 'versions' blob from config or configsave table."""
+    import zlib
+    from sqlalchemy import text as sql_text
+    try:
+        row = session.execute(
+            sql_text(f"SELECT binarydata FROM {table} WHERE filename='versions'")
+        ).one()
+    except Exception:
+        return None
+    data = bytes(row[0])
+    try:
+        dec = zlib.decompress(data, -15)
+    except zlib.error:
+        return None
+    return _parse_versions_blob(dec.decode("utf-8-sig", errors="replace"))
+
+
+_resolve_cache: dict[str, dict | None] = {}
+
+# Map 1C type_num → human-readable category
+# Derived from metadata_map analysis of known objects
+_TYPE_NUM_TO_CATEGORY: dict[int, str] = {
+    0: "Settings",
+    1: "ScheduledJobs",
+    2: "IntegrationServices",
+    3: "CommonModules",
+    4: "Sessions",
+    6: "Subsystems",
+    7: "EventSubscriptions",
+    12: "Bots",
+    16: "Constants",
+    17: "CommonForms",
+    19: "CommandGroups",
+    20: "Enums",
+    22: "FunctionalOptions",
+    33: "InformationRegisters",
+    34: "ChartsOfCharacteristicTypes",
+    40: "Documents",
+    57: "Catalogs",
+    68: "ConfigSave",
+}
+
+
+def _category_from_type_num(type_num: int | None) -> str:
+    """Infer category from 1C metadata type number."""
+    if type_num is None:
+        return ""
+    return _TYPE_NUM_TO_CATEGORY.get(type_num, "")
+
+
+def _resolve_metadata_from_file(
+    session, version_uuid: str, reg: SchemaRegistry,
+) -> dict | None:
+    """Resolve a version UUID to metadata info with caching and direct lookup.
+
+    1. Fast-path: check if version_uuid is already in metadata_map.
+    2. Read the blob from configsave/config, extract {1,0,...} metadata UUID.
+    3. Results are cached for the lifetime of the session.
+    """
+    import re
+    import zlib
+    from sqlalchemy import text as sql_text
+
+    # Strip .0, .N suffixes
+    base_uuid = re.sub(r'\.[0-9]+$', '', version_uuid.lower())
+
+    if not re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', base_uuid, re.IGNORECASE):
+        return None
+
+    # Check cache
+    if base_uuid in _resolve_cache:
+        return _resolve_cache[base_uuid]
+
+    # Fast-path: direct metadata_map lookup
+    meta_info = reg.metadata_map.get(base_uuid)
+    if meta_info is not None:
+        obj_info = reg.get_object_by_uuid(base_uuid)
+        cat = (
+            obj_info.category
+            if obj_info
+            else _category_from_type_num(meta_info.get("type_num"))
+        )
+        result = {
+            "metadata_uuid": base_uuid,
+            "tech_name": meta_info.get("tech_name", ""),
+            "category": cat,
+            "display_ru": obj_info.display_ru if obj_info else meta_info.get("display_names", {}).get("ru", ""),
+            "storage_table": "(metadata_map)",
+        }
+        _resolve_cache[base_uuid] = result
+        return result
+
+    # Fallback: try to read the blob
+    # Try both the original version string (may include .N suffix for multi-part files)
+    # and the base UUID (for special files like ConfigSave descriptor)
+    filenames_to_try = [version_uuid.lower(), base_uuid]
+    for tbl in ("configsave", "config"):
+        for fn in filenames_to_try:
+            try:
+                row = session.execute(
+                    sql_text(f"SELECT binarydata FROM {tbl} WHERE filename='{fn}' LIMIT 1")
+                ).one_or_none()
+                if row is None:
+                    continue
+                data = bytes(row[0])
+                dec = zlib.decompress(data, -15)
+                txt = dec.decode("utf-8-sig", errors="replace")
+                m = re.search(
+                    r'\{1,0,([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\}',
+                    txt,
+                )
+                if m:
+                    meta_uuid = m.group(1).lower()
+                    meta_info2 = reg.metadata_map.get(meta_uuid, {})
+                    obj_info2 = reg.get_object_by_uuid(meta_uuid)
+                    cat2 = (
+                        obj_info2.category
+                        if obj_info2
+                        else _category_from_type_num(meta_info2.get("type_num"))
+                    )
+                    result = {
+                        "metadata_uuid": meta_uuid,
+                        "tech_name": meta_info2.get("tech_name", ""),
+                        "category": cat2,
+                        "display_ru": obj_info2.display_ru if obj_info2 else meta_info2.get("display_names", {}).get("ru", ""),
+                        "storage_table": tbl,
+                    }
+                    _resolve_cache[base_uuid] = result
+                    return result
+                # Blob exists but no {1,0,...} pattern — detect sub-object type
+                type_hint = ""
+                if "{5,1," in txt:
+                    type_hint = "Form (HTML)"
+                elif "{1,1," in txt and "Module" in txt:
+                    type_hint = "Module (BSL)"
+                elif "{1,1," in txt:
+                    type_hint = "Sub-object"
+                obj_info2 = reg.get_object_by_uuid(base_uuid)
+                result = {
+                    "metadata_uuid": base_uuid,
+                    "tech_name": obj_info2.tech_name if obj_info2 else type_hint,
+                    "category": obj_info2.category if obj_info2 else "SubObject",
+                    "display_ru": obj_info2.display_ru if obj_info2 else "",
+                    "storage_table": tbl,
+                    "note": f"Version string references a sub-object ({type_hint or 'no metadata reference'})",
+                }
+                _resolve_cache[base_uuid] = result
+                return result
+            except Exception:
+                continue
+
+    _resolve_cache[base_uuid] = None
+    return None
+
+
+def _preload_blob_locations(session) -> tuple[set[str], set[str]]:
+    """Pre-load sets of filenames from configsave and config tables."""
+    from sqlalchemy import text as sql_text
+    cs_files = {r[0].lower() for r in session.execute(sql_text("SELECT filename FROM configsave"))}
+    cfg_files = {r[0].lower() for r in session.execute(sql_text("SELECT filename FROM config"))}
+    return cs_files, cfg_files
+
+
+def _get_config_snapshot(dbname: str, args: dict) -> list[TextContent]:
+    """Parse configsave.versions and return a snapshot of all config objects.
+
+    Maps internal version UUIDs to metadata objects by reading the blobs.
+    """
+    from py1cv8.db import get_session
+
+    session = get_session(dbname)
+    try:
+        source = args.get("source", "configsave")
+        if source not in ("configsave", "config"):
+            return [TextContent(type="text", text="source must be 'configsave' or 'config'.")]
+
+        versions = _read_versions_blob(session, source)
+        if versions is None:
+            return [TextContent(
+                type="text",
+                text=f"Не удалось прочитать {source}.versions. "
+                     "Убедитесь, что есть сохранённая конфигурация.",
+            )]
+
+        reg = _loader(dbname)
+        cs_files, cfg_files = _preload_blob_locations(session)
+
+        # Categorise entries
+        by_cat: dict[str, list[dict]] = {}
+        other_count = 0
+
+        for entry_uuid, ver_str in sorted(versions.items()):
+            # Special entries
+            if ver_str in ("root", "version", "versions"):
+                other_count += 1
+                continue
+
+            # Try to resolve version UUID to metadata
+            meta = _resolve_metadata_from_file(session, ver_str, reg)
+            cat = (meta or {}).get("category") or "Unresolved"
+            entry: dict = {
+                "entry_uuid": entry_uuid,
+                "version": ver_str,
+            }
+            if meta:
+                entry["metadata_uuid"] = meta["metadata_uuid"]
+                if meta["tech_name"]:
+                    entry["tech_name"] = meta["tech_name"]
+                if meta["display_ru"]:
+                    entry["display_ru"] = meta["display_ru"]
+                if meta["metadata_uuid"] is None:
+                    entry["note"] = f"Версия есть в {meta['storage_table']}, но без ссылки на объект метаданных"
+            else:
+                # Check if the version UUID is a known file but metadata not found
+                if ver_str in cs_files or ver_str in cfg_files:
+                    entry["note"] = "Файл существует, UUID объекта метаданных не найден"
+                else:
+                    entry["note"] = "Не удалось найти файл для этой версии"
+
+            by_cat.setdefault(cat, []).append(entry)
+
+        ts_row = session.execute(
+            text("SELECT creation FROM configsave WHERE filename='versions' LIMIT 1")
+        ).one_or_none()
+        timestamp = str(ts_row[0]) if ts_row else None
+
+        result = {
+            "source": source,
+            "timestamp": timestamp,
+            "total_entries": len(versions),
+            "by_category": {
+                cat: {"count": len(entries), "objects": entries[:100]}
+                for cat, entries in sorted(by_cat.items(), key=lambda x: -len(x[1]))
+            },
+            "special_entries": other_count,
+        }
+
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2, default=str))]
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error: {e}")]
+    finally:
+        session.close()
+
+
+def _find_changed_objects(dbname: str, args: dict) -> list[TextContent]:
+    """Compare configsave (pending) vs config (live) to find pending changes.
+
+    Resolves version UUIDs to metadata object names by reading the blobs.
+    Highlights what the developer changed but hasn't applied yet.
+    """
+    from py1cv8.db import get_session
+
+    session = get_session(dbname)
+    try:
+        saved = _read_versions_blob(session, "configsave")
+        live = _read_versions_blob(session, "config")
+
+        if saved is None or live is None:
+            return [TextContent(type="text", text="Не удалось прочитать configsave.versions или config.versions.")]
+
+        reg = _loader(dbname)
+        cs_files, cfg_files = _preload_blob_locations(session)
+
+        saved_keys = set(saved.keys())
+        live_keys = set(live.keys())
+        common = saved_keys & live_keys
+
+        # Changed: same entry UUID but different version string
+        changed: list[dict] = []
+        for k in sorted(common):
+            sv = saved[k]
+            lv = live[k]
+            if sv != lv:
+                meta_sv = _resolve_metadata_from_file(session, sv, reg)
+                meta_lv = _resolve_metadata_from_file(session, lv, reg)
+                changed.append({
+                    "entry_uuid": k,
+                    "saved_version": sv,
+                    "live_version": lv,
+                    "saved_object": meta_sv["tech_name"] if meta_sv and meta_sv["tech_name"] else "?",
+                    "saved_metadata_uuid": (meta_sv or {}).get("metadata_uuid") or "",
+                    "live_object": meta_lv["tech_name"] if meta_lv and meta_lv["tech_name"] else "?",
+                    "live_metadata_uuid": (meta_lv or {}).get("metadata_uuid") or "",
+                })
+
+        # New: only in saved
+        new_list: list[dict] = []
+        for k in sorted(saved_keys - live_keys):
+            sv = saved[k]
+            meta = _resolve_metadata_from_file(session, sv, reg)
+            new_list.append({
+                "entry_uuid": k,
+                "version": sv,
+                "object_name": meta["tech_name"] if meta and meta["tech_name"] else "?",
+                "metadata_uuid": (meta or {}).get("metadata_uuid"),
+            })
+
+        # Removed: only in live
+        removed_list: list[dict] = []
+        for k in sorted(live_keys - saved_keys):
+            lv = live[k]
+            meta = _resolve_metadata_from_file(session, lv, reg)
+            removed_list.append({
+                "entry_uuid": k,
+                "version": lv,
+                "object_name": meta["tech_name"] if meta and meta["tech_name"] else "?",
+                "metadata_uuid": (meta or {}).get("metadata_uuid"),
+            })
+
+        result = {
+            "summary": {
+                "total_saved": len(saved),
+                "total_live": len(live),
+                "changed": len(changed),
+                "new": len(new_list),
+                "removed": len(removed_list),
+                "has_pending_changes": len(changed) > 0 or len(new_list) > 0 or len(removed_list) > 0,
+            },
+            "changed_objects": changed,
+            "new_objects": new_list,
+            "removed_objects": removed_list,
+        }
+
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2, default=str))]
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error: {e}")]
+    finally:
+        session.close()
+
+
+def _find_metadata_uuid_by_name(name_query: str, reg: SchemaRegistry) -> str | None:
+    """Search for a metadata object by name across all available fields."""
+    q = name_query.strip().lower()
+
+    # 1. SchemaRegistry objects: tech_name, display_ru, uuid, main_table, table_number
+    for obj in reg.objects.values():
+        if q in obj.uuid.lower() or q in obj.tech_name.lower() or q in obj.display_ru.lower():
+            return obj.uuid
+        if obj.main_table and q in obj.main_table.lower():
+            return obj.uuid
+        # Also match by table_number (e.g. "53" → _reference53)
+        tbl_num = str(obj.table_number) if obj.table_number else ""
+        if tbl_num and tbl_num in q:
+            return obj.uuid
+
+    # 2. metadata_map all objects (includes non-table objects like modules)
+    for uuid_val, info in reg.metadata_map.items():
+        tn = info.get("tech_name", "")
+        if tn and q in tn.lower():
+            return uuid_val
+        display_names = info.get("display_names", {})
+        for lang_name in display_names.values():
+            if lang_name and q in lang_name.lower():
+                return uuid_val
+
+    # 3. Try matching table names like "Reference_53", "reference53"
+    q_clean = q.replace("_", "").replace("-", "").replace(" ", "").lower()
+    for obj in reg.objects.values():
+        if obj.main_table:
+            tbl_clean = obj.main_table.lstrip("_").replace("_", "").lower()
+            if q_clean and q_clean in tbl_clean:
+                return obj.uuid
+        # Also try "reference_53" → from tech_name or other fields
+        if q in "reference" and obj.table_number:
+            # Match "Reference_53" or "reference53" or just "53"
+            if str(obj.table_number) in q:
+                return obj.uuid
+
+    return None
+
+
+def _get_object_config_history(dbname: str, args: dict) -> list[TextContent]:
+    """Show config version history for an object across save points.
+
+    Finds the object's metadata UUID in configsave/config blobs via
+    {1,0,...} patterns, then traces which versions blob entries reference it.
+    """
+    from py1cv8.db import get_session
+
+    uuid_query = (args.get("uuid") or "").strip().lower()
+    name_query = (args.get("name") or "").strip()
+
+    if not uuid_query and not name_query:
+        return [TextContent(type="text", text="Укажите uuid или name объекта.")]
+
+    session = get_session(dbname)
+    try:
+        if not uuid_query and name_query:
+            reg = _loader(dbname)
+            uuid_query = _find_metadata_uuid_by_name(name_query, reg)
+            if not uuid_query:
+                return [TextContent(type="text", text=f"Объект '{name_query}' не найден.")]
+
+        reg = _loader(dbname)
+        obj = reg.get_object_by_uuid(uuid_query)
+        meta_info = reg.metadata_map.get(uuid_query, {})
+        tech_name = (obj.tech_name if obj else meta_info.get("tech_name", "")) or "?"
+        display_ru = obj.display_ru if obj else meta_info.get("display_names", {}).get("ru", "")
+
+        saved = _read_versions_blob(session, "configsave")
+        live = _read_versions_blob(session, "config")
+
+        history: list[dict] = []
+        seen_entries: set[str] = set()
+
+        def _find_matches(versions, source_label):
+            """Find versions blob entries whose blob contains the metadata UUID."""
+            for entry_uuid, ver_str in (versions or {}).items():
+                if ver_str in ("root", "version", "versions"):
+                    continue
+                try:
+                    meta = _resolve_metadata_from_file(session, ver_str, reg)
+                    if meta and meta.get("metadata_uuid") == uuid_query:
+                        key = f"{source_label}:{entry_uuid}"
+                        if key not in seen_entries:
+                            seen_entries.add(key)
+                            history.append({
+                                "source": source_label,
+                                "entry_uuid": entry_uuid,
+                                "version": ver_str,
+                                "metadata_uuid": uuid_query,
+                                "tech_name": tech_name,
+                            })
+                except Exception:
+                    continue
+
+        _find_matches(live, "config (live)")
+        _find_matches(saved, "configsave (pending)")
+
+        result: dict = {
+            "uuid": uuid_query,
+            "tech_name": tech_name,
+        }
+        if display_ru:
+            result["display_ru"] = display_ru
+
+        if history:
+            result["history"] = history
+
+            # Diff between sources
+            if live and saved:
+                live_map = {h["entry_uuid"]: h for h in history if "live" in h["source"]}
+                saved_map = {h["entry_uuid"]: h for h in history if "pending" in h["source"]}
+                diffs = []
+                all_keys = set(live_map) | set(saved_map)
+                for k in sorted(all_keys):
+                    lv = live_map.get(k)
+                    sv = saved_map.get(k)
+                    if lv and sv and lv["version"] != sv["version"]:
+                        diffs.append({
+                            "entry_uuid": k,
+                            "live_version": lv["version"],
+                            "saved_version": sv["version"],
+                            "status": "changed",
+                        })
+                    elif sv and not lv:
+                        diffs.append({"entry_uuid": k, "saved_version": sv["version"], "status": "new"})
+                    elif lv and not sv:
+                        diffs.append({"entry_uuid": k, "live_version": lv["version"], "status": "removed"})
+                if diffs:
+                    result["differences"] = diffs
+        else:
+            result["note"] = "Объект не найден в истории конфигурации (возможно, это сервисный объект без version entry)."
+
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2, default=str))]
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error: {e}")]
+    finally:
+        session.close()
 
 
 # ── Run ─────────────────────────────────────────────────────────────────
