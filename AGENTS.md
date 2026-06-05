@@ -406,3 +406,37 @@ type_num извлекается из бинарного блоба config/config
 
 ### Непокрытые типы (нет type_num без БД)
 25 типов без известного type_num: `Bots`, `BusinessProcesses`, `Catalogs`, `CommandGroups`, `CommonAttributes`, `CommonCommands`, `CommonPictures`, `DefinedTypes`, `DocumentJournals`, `DocumentNumerators`, `EventSubscriptions`, `ExchangePlans`, `FilterCriteria`, `FunctionalOptions`, `FunctionalOptionsParameters`, `HTTPServices`, `IntegrationServices`, `Languages`, `ScheduledJobs`, `SessionParameters`, `SettingsStorages`, `Tasks`, `WebServices`, `WebSocketClients`, `XDTOPackages`
+
+---
+
+### 10. СОСТОЯНИЕ ТЕСТОВ (актуально на 2026-06-06)
+
+#### Модули с тестами ✅
+| Модуль | Тест |
+|--------|------|
+| `bsl.py` | ❌ нет |
+| `blob_fetch.py` | ❌ нет |
+| `cli.py` | ✅ `test_cli.py` |
+| `context.py` | ❌ нет |
+| `db.py` | ✅ `test_db.py` |
+| `dbnames.py` | ✅ `test_dbnames.py` |
+| `describe_object.py` | ❌ нет |
+| `find_objects.py` | ❌ нет |
+| `graph.py` | ❌ нет |
+| `json_encoder.py` | ❌ нет |
+| `list_tables.py` | ❌ нет |
+| `lookup_uuid.py` | ❌ нет |
+| `mcp_server.py` | ❌ нет |
+| `metadata_binary.py` | ✅ `test_metadata_binary.py` |
+| `output.py` | ❌ нет |
+| `query_translator.py` | ✅ `test_query_translator.py` |
+| `resolve_uuid.py` | ❌ нет |
+| `schema_describe.py` | ❌ нет |
+| `sql/orm/` (config_queries) | ✅ `test_orm_config.py` |
+| `type_enums.py` | ❌ нет |
+
+**Итого:** 5 модулей с тестами из ~22 = ~23% покрытие. Приоритет для новых тестов: `mcp_server.py`, `bsl.py`, `describe_object.py`, `graph.py`.
+
+#### Что требует рефакторинга
+- **`mcp_server.py`** — 921 строка, создана `mcp/` структура, но `tools/` пуста
+- **`blob_fetch.py` / `blob/decompress.py`** — заменили старый `compress.py`, тесты `test_compress.py` висят в воздухе
