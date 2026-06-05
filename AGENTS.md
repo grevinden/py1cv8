@@ -34,14 +34,17 @@ src/py1cv8/
 ├── context.py           # Генератор LLM-контекста: метаданные + правила DBNames/schema
 ├── sql_proxy.py         # Read-only SQL endpoint для LLM (SELECT/EXPLAIN/WITH)
 ├── agent_prompt.py      # LLM agent prompt (выводится при py1cv8 без аргументов)
-├── cli.py               # CLI: agent | context | sql | blob | find | schema | resolve
+├── cli.py               # CLI: agent | context | sql | blob | find | schema | resolve | describe | tables | graph
 ├── json_encoder.py      # JSON-encoder: UUID/memoryview → hex-строка
+├── output.py            # print_json / print_text (typer.echo — pipe-safe вывод)
 ├── find_objects.py      # find — поиск объектов по имени
 ├── schema_describe.py   # schema — структура таблицы
 ├── describe_object.py   # describe — полное описание объекта (метаданные + схема + семпл + blob)
 ├── resolve_uuid.py      # resolve — UUID → _Description / _Code (метаданные + данные)
 ├── blob_fetch.py        # Извлечение и декомпрессия блобов config/configcas
 ├── v8unpack_types.py    # type_num → v8unpack-имена
+├── list_tables.py       # tables — маппинг tech_name → physical table
+├── graph.py             # graph — граф связей объекта (owner, parent, refs, reverse)
 └── __main__.py          # Точка входа: диспетчеризация по командам
 ```
 
@@ -54,12 +57,10 @@ python -m py1cv8 sql [db_url] [query]  # Read-only SQL запрос
 python -m py1cv8 blob [db_url] --uuid [uuid]  # Сырой блоб config/configcas
 python -m py1cv8 agent        # Явный вывод agent prompt
 python -m py1cv8 --help       # Справка
-python -m pytest tests/           # 101 тест
+python -m pytest tests/           # 183 теста
 python -m ruff check src/py1cv8/
 python -m mypy src/py1cv8/
-python -m nuitka --onefile --clang --lto=yes --output-dir=dist src/py1cv8/__main__.py  # Nuitka onefile (Intel clang-cl)
-build_intel.cmd        # Полная сборка с Intel oneAPI + LTO
-python -m nuitka --onefile --lto=yes --output-dir=dist src/py1cv8/__main__.py  # Nuitka onefile (MSVC)
+build_intel.cmd              # Сборка Intel oneAPI + Nuitka LTO (локально)
 ```
 
 ### TYPE_MAP (категории файлов)
@@ -244,9 +245,71 @@ table_name = f"_Reference{table_num}"
 
 ---
 
+## 8. ПРОЦЕСС РАЗРАБОТКИ (ЧЕКЛИСТ ИТЕРАЦИИ)
+
+После каждого изменения выполняй шаги в порядке приоритета:
+
+### 8.1. После любого кода
+```bash
+python -m ruff check src/py1cv8/       # линтер (100 колонок, PEP 8)
+python -m mypy src/py1cv8/            # type hints
+python -m pytest tests/ -q            # все тесты
+```
+
+Если добавил новую команду/фичу — обязательно:
+
+### 8.2. Регистрация новой команды
+- [ ] Добавить в `cli.py` — typer-команда с `--json/-j`, `--pretty/-p`, `--help`
+- [ ] Добавить в `agent_prompt.py` — краткое описание в список команд
+- [ ] Добавить в `__main__.py` — если нужен прямой CLI-доступ
+- [ ] Проверить `py1cv8 --help` — команда должна быть в списке
+
+### 8.3. Документация в AGENTS.md
+- [ ] Добавить модуль в список `src/py1cv8/` с однострочным описанием
+- [ ] Если меняется архитектура — обновить секцию «Ключевые слои архитектуры»
+- [ ] Если новый тип данных/формат — обновить соответствующий раздел
+
+### 8.4. Тестирование на живых данных (MessageCenter)
+- [ ] Запустить новую команду с реальным DB URL
+- [ ] Проверить `--help` команды
+- [ ] Проверить текстовый вывод (по умолчанию)
+- [ ] Проверить JSON вывод (`--json`)
+- [ ] Проверить граничные случаи: невалидный UUID, пустая таблица, нулевые UUID
+- [ ] Убедиться что вывод **человекочитаемый** (нет hex/JSON/технических типов)
+
+### 8.5. Проверка выводов (только для команд с выводом пользователю)
+- [ ] `describe` — колонки должны быть расшифрованы на русском
+- [ ] `graph` — связи должны быть с именами, не UUID
+- [ ] `resolve` — должен найти и tech_name и _Description
+- [ ] `sql` — результат в JSON, не сырой SQL результат
+- [ ] Ошибки — вежливые сообщения без traceback
+
+### 8.6. agent_prompt — синхронизация
+- [ ] Если новая команда — добавить в раздел «Доступные команды»
+- [ ] Если изменилась стратегия анализа — обновить «Стратегия анализа связей»
+- [ ] Если новые типичные ошибки — добавить в «Типичные ошибки»
+- [ ] Флаг `py1cv8` (без аргументов) должен выводить актуальную версию
+
+### 8.7. Финальная сборка (перед commit/deploy)
+```bash
+python -m ruff check src/py1cv8/
+python -m mypy src/py1cv8/
+python -m pytest tests/ -q
+build_intel.cmd              # Intel oneAPI + Nuitka LTO
+```
+На CI (GitHub Actions) сборка через MSVC/gcc — см. `.github/workflows/build.yml`.
+
+### 8.8. Сохранение контекста (agentmemory)
+- [ ] Сохранить ключевые архитектурные решения: `agentmemory_memory_save`
+- [ ] Какие файлы изменены, что именно, почему
+- [ ] Если найдена ошибка — сохранить root cause + fix: `agentmemory_memory_save type=bug`
+- [ ] Если открыт новый unknown — сохранить как факт для будущих сессий
+
+---
+
 ## ОБЩЕНИЕ С ПОЛЬЗОВАТЕЛЕМ
 
-### 8. ЧЕЛОВЕКОПОНЯТНЫЙ ВЫВОД (обязательно)
+### 9. ЧЕЛОВЕКОПОНЯТНЫЙ ВЫВОД (обязательно)
 
 **Любые данные из БД, блобов или метаданных 1С выдавай пользователю только в человекочитаемом виде.** Запрещено показывать:
 

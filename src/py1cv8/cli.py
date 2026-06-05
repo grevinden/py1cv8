@@ -291,13 +291,21 @@ def graph(
         str,
         typer.Argument(help="UUID of the object to show relationships for"),
     ],
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", "-j", help="Output raw JSON instead of formatted text"),
+    ] = False,
     pretty: Annotated[
         bool,
-        typer.Option("--pretty", "-p", help="Pretty-print JSON"),
+        typer.Option("--pretty", "-p", help="Pretty-print JSON (only with --json)"),
     ] = False,
 ) -> None:
     """Show relationship graph for a 1C object — refs, owners, parents."""
-    from py1cv8.graph import build_graph
+    from py1cv8.graph import build_graph, graph_text
 
-    g = build_graph(db_url, uuid)
-    print_json(g, pretty=pretty)
+    if json_output:
+        g = build_graph(db_url, uuid)
+        print_json(g, pretty=pretty)
+    else:
+        text = graph_text(db_url, uuid)
+        print_text(text)

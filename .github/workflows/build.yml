@@ -15,7 +15,16 @@ jobs:
       - run: pip install nuitka zstandard
       - run: pip install -e .
       - name: Build with Nuitka (MSVC + LTO)
-        run: python -m nuitka --onefile --lto=yes --output-dir=dist --output-filename=py1cv8-win-x64.exe src/py1cv8/__main__.py
+        run: |
+          python -m nuitka --onefile --lto=yes --output-dir=dist --output-filename=py1cv8-win-x64.exe `
+            --python-flag="-m" --prefer-source-code `
+            --nofollow-import-to=mypy `
+            --include-module=psycopg2 `
+            --include-module=sqlalchemy.dialects.postgresql `
+            --include-module=pyodbc `
+            --include-module=charset_normalizer `
+            --include-windows-runtime-dlls=yes `
+            src/py1cv8
       - uses: actions/upload-artifact@v4
         with:
           name: py1cv8-windows-x64
@@ -32,7 +41,14 @@ jobs:
       - run: pip install nuitka zstandard
       - run: pip install -e .
       - name: Build with Nuitka (gcc + LTO)
-        run: python -m nuitka --onefile --lto=yes --output-dir=dist --output-filename=py1cv8-linux-x64 src/py1cv8/__main__.py
+        run: |
+          python -m nuitka --onefile --lto=yes --output-dir=dist --output-filename=py1cv8-linux-x64 \
+            --python-flag="-m" --prefer-source-code \
+            --nofollow-import-to=mypy \
+            --include-module=psycopg2 \
+            --include-module=sqlalchemy.dialects.postgresql \
+            --include-windows-runtime-dlls=no \
+            src/py1cv8
       - uses: actions/upload-artifact@v4
         with:
           name: py1cv8-linux-x64
