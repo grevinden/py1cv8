@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import struct
+import uuid as uuid_mod
 from typing import Any
 
 from sqlalchemy import create_engine, text
@@ -243,14 +244,16 @@ def _summarise_value(
             name = TYPE_DISCRIMINATOR_MAP.get(byte_val, f"Type 0x{byte_val:02X}")
             return f"0x{byte_val:02X} = {name}"
         if len(raw) == 16:
-            import uuid
             try:
-                u = str(uuid.UUID(bytes=raw))
+                u = str(uuid_mod.UUID(bytes=raw))
                 if resolve_map and u in resolve_map:
                     r = resolve_map[u]
-                    desc = r.get("description") or r.get("tech_name") or ""
-                    code = r.get("code") or ""
-                    tag = f"{desc} ({code})" if code else desc
+                    tag = (
+                        r.get("description")
+                        or r.get("code")
+                        or r.get("tech_name")
+                        or ""
+                    )
                     if tag:
                         return f"{u} → {tag}"
                 return u
@@ -284,9 +287,8 @@ def _build_resolve_map(
             raw = bytes(val) if isinstance(val, (bytes, memoryview)) else b""
             if len(raw) != 16:
                 continue
-            import uuid
             try:
-                u = str(uuid.UUID(bytes=raw))
+                u = str(uuid_mod.UUID(bytes=raw))
             except Exception:
                 continue
             if u in seen_uuids:
@@ -299,7 +301,7 @@ def _build_resolve_map(
                 hint = rtref_targets[cn].get("table_name")
 
             try:
-                resolved = resolve_uuid(db_url, u, table_name=hint, limit=1)
+                resolved = resolve_uuid(db_url, u, table_name=hint, limit=50)
                 if resolved and resolved[0].get("source"):
                     resolve_map[u] = resolved[0]
             except Exception:
@@ -313,6 +315,7 @@ def describe_object(
     uuid_str: str,
     sample_limit: int = 3,
     resolve_refs: bool = False,
+    no_blob: bool = False,
 ) -> dict:
     """Build a full description dict for *uuid_str*.
 
@@ -333,6 +336,22 @@ def describe_object(
             if o.get("uuid", "").replace("-", "").lower().endswith(hex_raw):
                 obj = o
                 break
+
+    if not obj:
+        # Fallback: try data tables via resolve
+        resolved = resolve_uuid(db_url, uuid_str, limit=5)
+        if resolved:
+            r = resolved[0]
+            tbl = r.get("table")
+            if tbl:
+                obj = {
+                    "uuid": r["uuid"],
+                    "tech_name": r.get("description") or r.get("code") or f"Record in {tbl}",
+                    "display_names": {},
+                    "type_num": None,
+                    "category": r.get("category"),
+                    "table_name": tbl,
+                }
 
     if not obj:
         return {
@@ -396,15 +415,16 @@ def describe_object(
         if type_info:
             result["type_discriminators"] = type_info
 
-    # Fetch blob
-    try:
-        blobs = fetch_blob(
-            db_url, table="config", uuid=obj["uuid"], limit=1,
-        )
-        if blobs and blobs[0].get("content"):
-            result["blob"] = blobs[0]["content"]
-    except Exception:
-        pass
+    # Fetch blob (skip if --no-blob)
+    if not no_blob:
+        try:
+            blobs = fetch_blob(
+                db_url, table="config", uuid=obj["uuid"], limit=1,
+            )
+            if blobs and blobs[0].get("content"):
+                result["blob"] = blobs[0]["content"]
+        except Exception:
+            pass
 
     return result
 
@@ -414,9 +434,13 @@ def describe_text(
     uuid_str: str,
     sample_limit: int = 3,
     resolve_refs: bool = False,
+    no_blob: bool = False,
 ) -> str:
     """Human-readable text description of a 1C metadata object."""
-    info = describe_object(db_url, uuid_str, sample_limit=sample_limit, resolve_refs=resolve_refs)
+    info = describe_object(
+        db_url, uuid_str, sample_limit=sample_limit,
+        resolve_refs=resolve_refs, no_blob=no_blob,
+    )
 
     lines: list[str] = []
 
@@ -440,11 +464,11 @@ def describe_text(
     else:
         lines.append("Table          : (none — no DBNames entry)")
 
+    col_desc = info.get("column_descriptions") or {}
     schema = info.get("schema")
     if schema:
         lines.append("")
         lines.append(f"--- Table schema ({table}) ---")
-        col_desc = info.get("column_descriptions") or {}
         for col in schema:
             cn = col["column_name"]
             dt = col["data_type"]
@@ -471,18 +495,13 @@ def describe_text(
                     continue
                 if v == "NULL":
                     continue
-                lines.append(f"    {k:25s} = {v}")
+                label = col_desc.get(k, k)
+                display = f"{label} [{k}]" if label and label != k else k
+                lines.append(f"    {display:40s} = {v}")
 
-    try:
-        blobs = fetch_blob(
-            db_url, table="config", uuid=info["uuid"], limit=1,
-        )
-        if blobs and blobs[0].get("content"):
-            lines.append("")
-            lines.append("--- Blob content (raw metadata) ---")
-            content = blobs[0]["content"]
-            lines.append(content[:6000])
-    except Exception:
-        pass
+    if info.get("blob"):
+        lines.append("")
+        lines.append("--- Blob content (raw metadata) ---")
+        lines.append(info["blob"][:6000])
 
     return "\n".join(lines)

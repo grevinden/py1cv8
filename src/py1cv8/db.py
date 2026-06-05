@@ -18,6 +18,15 @@ _sessions: dict[str, sessionmaker] = {}
 _base_url: str = "postgresql+psycopg2://postgres:qwaseD12@localhost:5433"
 
 
+def normalise_db_url(db_url: str) -> str:
+    """Normalise PostgreSQL URL aliases.
+
+    SQLAlchemy uses ``postgresql://`` as the canonical scheme.
+    The ``postgres://`` alias is deprecated — replace it transparently.
+    """
+    return db_url.replace("postgres://", "postgresql://", 1)
+
+
 def is_postgres_url(db_url: str) -> bool:
     """Check if the URL points to a PostgreSQL database."""
     return "postgresql" in db_url or "postgres" in db_url

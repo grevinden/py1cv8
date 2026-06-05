@@ -67,12 +67,12 @@ def _find_row_by_uuid(
     """
     idrref_hex = _uuid_to_1c_idrref_hex(uuid_hex)
     tbl = quote_ident(table, db_url)
-    idr = quote_ident("_IDRRef", db_url)
+    idr = quote_ident("_idrref", db_url)
 
     if is_postgres_url(db_url):
         sql = text(
             f"SELECT * FROM {tbl}"
-            f" WHERE encode({idr}, 'hex') IN ('{uuid_hex}', '{idrref_hex}')"
+            f" WHERE encode({idr}::bytea, 'hex') IN ('{uuid_hex}', '{idrref_hex}')"
             f" LIMIT 1"
         )
     else:
@@ -172,12 +172,14 @@ def resolve_uuid(
                 for tbl in tables:
                     row_dict = _find_row_by_uuid(conn, tbl, hex_val, db_url)
                     if row_dict:
+                        # PG folds unquoted identifiers to lowercase
+                        rd = {k.lower(): v for k, v in row_dict.items()}
                         results.append(
                             {
                                 "table": tbl,
                                 "uuid": _format_uuid(hex_val),
-                                "description": row_dict.get("_Description"),
-                                "code": row_dict.get("_Code"),
+                                "description": rd.get("_description"),
+                                "code": rd.get("_code"),
                                 "tech_name": None,
                                 "category": None,
                                 "source": "data",
@@ -186,19 +188,6 @@ def resolve_uuid(
                         break
         finally:
             engine.dispose()
-
-    if not results:
-        results.append(
-            {
-                "table": None,
-                "uuid": _format_uuid(hex_val),
-                "description": None,
-                "code": None,
-                "tech_name": None,
-                "category": None,
-                "source": None,
-            }
-        )
 
     return results
 

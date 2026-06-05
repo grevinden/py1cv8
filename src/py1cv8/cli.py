@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 import typer
 
 from py1cv8.agent_prompt import AGENT_PROMPT
+from py1cv8.db import normalise_db_url
 from py1cv8.output import print_json, print_text
 
 app = typer.Typer(
@@ -24,7 +25,9 @@ def agent() -> None:
 
 
 def _parse_db_url(db_url: str) -> tuple[str, str]:
-    parsed = urlparse(db_url)
+    # Normalise: postgres:// → postgresql:// (SQLAlchemy deprecation)
+    normalised = db_url.replace("postgres://", "postgresql://", 1)
+    parsed = urlparse(normalised)
     path = parsed.path.strip("/")
     if not path:
         raise ValueError(f"Database URL must include a path (database name): {db_url}")
@@ -53,6 +56,7 @@ def context(
     ] = False,
 ) -> None:
     """Print LLM-friendly context from 1C metadata."""
+    db_url = normalise_db_url(db_url)
     from py1cv8.context import build_llm_context
 
     ctx = build_llm_context(db_url)
@@ -82,6 +86,7 @@ def sql(
     ] = False,
 ) -> None:
     """Execute a read-only SQL query and print results as JSON."""
+    db_url = normalise_db_url(db_url)
     from py1cv8.sql_proxy import ReadOnlyError, execute_readonly
 
     try:
@@ -119,7 +124,7 @@ def blob(
     ] = None,
     partno: Annotated[
         int | None,
-        typer.Option("--partno", "-p", help="Part number filter"),
+        typer.Option("--partno", help="Part number filter"),
     ] = None,
     limit: Annotated[
         int,
@@ -127,10 +132,11 @@ def blob(
     ] = 20,
     pretty: Annotated[
         bool,
-        typer.Option("--pretty", help="Pretty-print JSON"),
+        typer.Option("--pretty", "-p", help="Pretty-print JSON"),
     ] = False,
 ) -> None:
     """Fetch and decompress config blobs — inspect raw metadata format."""
+    db_url = normalise_db_url(db_url)
     from py1cv8.blob_fetch import fetch_blob
 
     rows = fetch_blob(
@@ -164,10 +170,11 @@ def find(
     ] = 50,
     pretty: Annotated[
         bool,
-        typer.Option("--pretty", help="Pretty-print JSON"),
+        typer.Option("--pretty", "-p", help="Pretty-print JSON output"),
     ] = False,
 ) -> None:
     """Search metadata objects by name (tech_name / display_name)."""
+    db_url = normalise_db_url(db_url)
     from py1cv8.find_objects import find_objects
 
     rows = find_objects(db_url, keyword, limit=limit)
@@ -194,6 +201,7 @@ def schema(
     ] = False,
 ) -> None:
     """Describe table structure via information_schema."""
+    db_url = normalise_db_url(db_url)
     from py1cv8.schema_describe import describe_table
 
     rows = describe_table(db_url, table_name)
@@ -222,12 +230,17 @@ def resolve(
         bool,
         typer.Option("--pretty", help="Pretty-print JSON"),
     ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", hidden=True, help="Output as JSON (default)"),
+    ] = False,
 ) -> None:
     """Resolve UUID to _Description / _Code from 1C tables."""
+    db_url = normalise_db_url(db_url)
     from py1cv8.resolve_uuid import resolve_uuid
 
     rows = resolve_uuid(db_url, uuid, table_name=table_name)
-    print_json(rows, pretty=pretty)
+    print_json(rows, pretty=pretty or json_output)
 
 
 @app.command()
@@ -252,12 +265,50 @@ def describe(
         bool,
         typer.Option("--resolve", "-r", help="Resolve UUID refs to names in sample data"),
     ] = False,
+    no_blob: Annotated[
+        bool,
+        typer.Option("--no-blob", help="Skip raw blob content in output"),
+    ] = False,
 ) -> None:
     """Describe a 1C metadata object — context + schema + blob + sample data."""
+    db_url = normalise_db_url(db_url)
     from py1cv8.describe_object import describe_text
 
-    text = describe_text(db_url, uuid, sample_limit=sample_rows, resolve_refs=resolve_refs)
+    text = describe_text(
+        db_url, uuid, sample_limit=sample_rows, resolve_refs=resolve_refs, no_blob=no_blob,
+    )
     print_text(text)
+
+
+@app.command()
+def lookup(
+    db_url: Annotated[
+        str,
+        typer.Argument(
+            help="Full SQLAlchemy database URL",
+            envvar="PY1CV8_DB_URL",
+            show_envvar=True,
+        ),
+    ],
+    uuid: Annotated[
+        str,
+        typer.Argument(help="UUID to search (with or without dashes)"),
+    ],
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-l", help="Max tables to search"),
+    ] = 50,
+    pretty: Annotated[
+        bool,
+        typer.Option("--pretty", "-p", help="Pretty-print JSON"),
+    ] = False,
+) -> None:
+    """Deep search UUID across ALL database tables with _idrref."""
+    db_url = normalise_db_url(db_url)
+    from py1cv8.lookup_uuid import lookup_uuid
+
+    rows = lookup_uuid(db_url, uuid, limit=limit)
+    print_json(rows, pretty=pretty)
 
 
 @app.command()
@@ -280,6 +331,7 @@ def tables(
     ] = False,
 ) -> None:
     """Show mapping: tech_name -> physical table name for all objects."""
+    db_url = normalise_db_url(db_url)
     from py1cv8.list_tables import list_tables
 
     rows = list_tables(db_url)
@@ -299,9 +351,9 @@ def graph(
         ),
     ],
     uuid: Annotated[
-        str,
-        typer.Argument(help="UUID of the object to show relationships for"),
-    ],
+        str | None,
+        typer.Argument(help="UUID of the object (optional with --all)"),
+    ] = None,
     json_output: Annotated[
         bool,
         typer.Option("--json", "-j", help="Output raw JSON instead of formatted text"),
@@ -310,13 +362,42 @@ def graph(
         bool,
         typer.Option("--pretty", "-p", help="Pretty-print JSON (only with --json)"),
     ] = False,
+    mermaid_output: Annotated[
+        bool,
+        typer.Option("--mermaid", "-m", help="Output Mermaid classDiagram"),
+    ] = False,
+    all_flag: Annotated[
+        bool,
+        typer.Option("--all", "-a", help="Show graph for ALL objects"),
+    ] = False,
 ) -> None:
-    """Show relationship graph for a 1C object — refs, owners, parents."""
-    from py1cv8.graph import build_graph, graph_text
+    """Show relationship graph for a 1C object — refs, owners, parents.
 
-    if json_output:
-        g = build_graph(db_url, uuid)
-        print_json(g, pretty=pretty)
+    Use --all to see relationships for every object at once.
+    """
+    db_url = normalise_db_url(db_url)
+    from py1cv8.graph import (
+        build_graph,
+        graph_all_mermaid,
+        graph_all_text,
+        graph_mermaid,
+        graph_text,
+    )  # fmt: skip
+
+    if all_flag:
+        if mermaid_output:
+            print_text(graph_all_mermaid(db_url))
+        elif json_output:
+            from py1cv8.graph import build_global_graph
+            print_json(build_global_graph(db_url), pretty=pretty)
+        else:
+            print_text(graph_all_text(db_url))
+    elif not uuid:
+        typer.echo("Error: provide a UUID or use --all", err=True)
+        raise typer.Exit(1)
+    elif mermaid_output:
+        print_text(graph_mermaid(db_url, uuid))
+    elif json_output:
+        print_json(build_graph(db_url, uuid), pretty=pretty)
     else:
-        text = graph_text(db_url, uuid)
-        print_text(text)
+        print_text(graph_text(db_url, uuid))

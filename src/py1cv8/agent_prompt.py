@@ -52,16 +52,21 @@ py1cv8 context <db_url>
 
 ### describe — полное описание объекта по UUID
 ```
-py1cv8 describe <db_url> <uuid> [-n <sample_rows>]
+py1cv8 describe <db_url> <uuid> [-n <sample_rows>] [-r] [--no-blob]
 ```
 Одна команда вместо четырёх: метаданные + схема таблицы + примеры данных + blob.
 Вывод человекочитаемый, с расшифровкой каждой колонки (reference, type discriminator,
 описание) и sample data. **Самая полезная команда для глубокого анализа одного объекта.**
+Флаги:
+- ``-n`` / ``--sample-rows`` — сколько строк sample data показать (по умолч. 3)
+- ``-r`` / ``--resolve`` — разрешить UUID-ссылки в sample data до человекочитаемых имён
+- ``--no-blob`` — не показывать сырой blob (bracket-формат)
 
-### graph — граф связей объекта (НОВИНКА!)
+### graph — граф связей объекта
 ```
 py1cv8 graph <db_url> <uuid>            # human-readable текст
 py1cv8 graph <db_url> <uuid> --json     # JSON для машинной обработки
+py1cv8 graph <db_url> <uuid> --mermaid  # Mermaid classDiagram
 ```
 Показывает одним вызовом:
 - **Владелец (Owner)**: кто владеет этим объектом (из `_owneridrref`)
@@ -73,6 +78,7 @@ py1cv8 graph <db_url> <uuid> --json     # JSON для машинной обра�
 
 **Используй `graph` как основной инструмент для понимания связей.**
 Это быстрее и точнее ручного разбора `_rref`/`_rtref` через несколько команд.
+Флаг ``--mermaid`` / ``-m`` генерирует готовый Mermaid classDiagram для вставки в Markdown.
 
 ### resolve — UUID → человекочитаемое имя
 ```
@@ -116,6 +122,20 @@ py1cv8 tables <db_url> [-t]
 ```
 Флаг `-t` показывает только объекты у которых есть физическая таблица.
 
+### graph --all — граф всех связей в БД
+```
+py1cv8 graph <db_url> --all [-m]
+```
+Без `-m` — текстовый список всех объектов и их связей.
+С `-m` — Mermaid classDiagram для всей базы.
+
+### lookup — глубокий поиск UUID по всем таблицам
+```
+py1cv8 lookup <db_url> <uuid>
+```
+Ищет UUID во ВСЕХ таблицах БД (не только DBNames).
+Полезно когда resolve не нашёл объект.
+
 ---
 
 ## 🔗 Стратегия анализа связей
@@ -128,7 +148,7 @@ py1cv8 tables <db_url> [-t]
 ### Быстрый путь (рекомендуемый)
 
 1. **Найди объект:** `find <db_url> <ключевое_слово>`
-2. **Граф связей:** `graph <db_url> <uuid>`
+2. **Граф связей:** `graph <db_url> <uuid>` или `graph <db_url> --all`
 3. **Детали:** `describe <db_url> <uuid>`
 
 Это покрывает 90% задач. Граф связей уже показывает владельца, родителя,

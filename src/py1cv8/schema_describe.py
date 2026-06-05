@@ -16,12 +16,17 @@ def _extract_prefix(name: str) -> str:
 
 
 def _find_similar_tables(engine, table_name: str) -> list[str]:
-    """Return list of existing table names that share the same prefix."""
+    """Return list of existing table names similar to *table_name*.
+
+    First tries prefix matching (``_Reference → _Reference%``).
+    Falls back to broad search (``%keyword%``) if no prefix matches.
+    """
     prefix = _extract_prefix(table_name)
     if not prefix or prefix == table_name:
         prefix = table_name
 
     with engine.connect() as conn:
+        # Try prefix match first
         result = conn.execute(
             text(
                 "SELECT table_name FROM information_schema.tables "
@@ -32,6 +37,18 @@ def _find_similar_tables(engine, table_name: str) -> list[str]:
             {"pattern": f"{prefix}%"},
         )
         matches = [r[0] for r in result.fetchall()]
+
+        if not matches:
+            # Fallback: show most common tables as a generic suggestion
+            result = conn.execute(
+                text(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = 'public' "
+                    "AND table_name NOT LIKE 'pg_%' "
+                    "ORDER BY table_name LIMIT 10"
+                ),
+            )
+            matches = [r[0] for r in result.fetchall()]
 
     return matches
 

@@ -155,7 +155,7 @@ def fetch_blob(
                 "partno": row["partno"],
                 "size": len(raw),
                 "decompressed_size": len(dec),
-                "content": content if len(content) <= 10000 else content[:10000] + "...",
+                "content": content if len(content) <= 50000 else content[:50000] + "...",
                 "parsed": parsed_info,
                 "category": category,
                 "format_description": BLOB_FORMAT_DESCRIPTION,

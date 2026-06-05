@@ -53,6 +53,30 @@ def _extract_field_names(blob_content: str) -> list[str]:
     return matches[1:] if len(matches) > 1 else []
 
 
+def _compute_fld_positions(schema_columns: list[dict]) -> dict[str, int]:
+    """Map each _fld{N} column name to its field-name index.
+
+    Extracts the field number from each column name. Variant columns
+    (_fld{N}rref, _fld{N}rtref, _fld{N}_TYPE etc.) that share the same
+    field number are deduplicated — all map to the same index determined
+    by the first occurrence of that field number in the table.
+    """
+    fld_re = re.compile(r"_fld(\d+)", re.IGNORECASE)
+    positions: dict[str, int] = {}
+    field_to_pos: dict[int, int] = {}
+    next_pos = 0
+    for col in schema_columns:
+        name = col["column_name"]
+        m = fld_re.match(name)
+        if m:
+            field_num = int(m.group(1))
+            if field_num not in field_to_pos:
+                field_to_pos[field_num] = next_pos
+                next_pos += 1
+            positions[name] = field_to_pos[field_num]
+    return positions
+
+
 def _build_reference_columns(
     db_url: str,
     table_name: str,
@@ -83,9 +107,9 @@ def _build_reference_columns(
 
     rref_re = re.compile(r"_fld\d+rref$", re.IGNORECASE)
     rtref_re_col = re.compile(r"_fld\d+rtref$", re.IGNORECASE)
+    fld_positions = _compute_fld_positions(schema_columns)
 
     ref_cols: list[dict] = []
-    ref_index = 0
     for col in schema_columns:
         name = col["column_name"]
         if name.lower() == "_idrref":
@@ -97,14 +121,8 @@ def _build_reference_columns(
         if not (is_rref or is_rtref):
             continue
 
-        field_name = name
-        if is_rref or is_rtref:
-            field_name = (
-                field_names[ref_index]
-                if ref_index < len(field_names)
-                else name
-            )
-            ref_index += 1
+        pos = fld_positions.get(name, -1)
+        field_name = field_names[pos] if pos >= 0 and pos < len(field_names) else name
 
         ref_cols.append({
             "column": name,
@@ -218,12 +236,12 @@ def _resolve_uuid_against_tables(
                     continue
                 try:
                     qtn = quote_ident(tn, db_url)
-                    qidr = quote_ident("_IDRRef", db_url)
+                    qidr = quote_ident("_idrref", db_url)
                     if is_pg:
                         arg = ",".join(f"'{h}'" for h in candidates)
                         sql = text(
                             f"SELECT 1 FROM {qtn}"
-                            f" WHERE encode({qidr}, 'hex') IN ({arg})"
+                            f" WHERE encode({qidr}::bytea, 'hex') IN ({arg})"
                             f" LIMIT 1"
                         )
                     else:
@@ -322,7 +340,6 @@ def _sample_rref_uuids(
     schema_columns = _get_table_schema(db_url, table_name)
     rref_re = re.compile(r"_fld\d+rref$", re.IGNORECASE)
     rtref_re = re.compile(r"_fld\d+rtref$", re.IGNORECASE)
-    ref_index = 0
 
     rref_cols = [
         c["column_name"]
@@ -342,14 +359,10 @@ def _sample_rref_uuids(
     try:
         with engine.connect() as conn:
             results: list[dict] = []
+            fld_positions = _compute_fld_positions(schema_columns)
             for col_name in rref_cols:
-                # Assign field name by positional order
-                fn = (
-                    field_names[ref_index]
-                    if ref_index < len(field_names)
-                    else col_name
-                )
-                ref_index += 1
+                pos = fld_positions.get(col_name, -1)
+                fn = field_names[pos] if pos >= 0 and pos < len(field_names) else col_name
 
                 is_pg = is_postgres_url(db_url)
                 qcol = quote_ident(col_name, db_url)
@@ -456,16 +469,13 @@ def _sample_rtref_targets(
                     except (ValueError, struct.error):
                         continue
 
+            fld_positions = _compute_fld_positions(schema_columns)
             results: list[dict] = []
             for (col_name, suffix), count in sorted(
                 refs.items(), key=lambda x: -x[1]
             ):
-                fn = (
-                    field_names[list(rtref_col_names).index(col_name)]
-                    if col_name in rtref_col_names
-                    and list(rtref_col_names).index(col_name) < len(field_names)
-                    else col_name
-                )
+                pos = fld_positions.get(col_name, -1)
+                fn = field_names[pos] if pos >= 0 and pos < len(field_names) else col_name
                 target = _resolve_from_table_suffix(suffix, ctx)
                 results.append({
                     "column": col_name,
@@ -579,10 +589,12 @@ def build_graph(db_url: str, uuid_str: str) -> dict:
                             continue
                         try:
                             arg = ",".join(f"'{h}'" for h in owner_candidates)
+                            qttn = quote_ident(ttn, db_url)
+                            qidr = quote_ident("_idrref", db_url)
                             trow = conn.execute(
                                 text(
-                                    f"SELECT 1 FROM {ttn}"
-                                    f" WHERE encode(_IDRRef, 'hex') IN ({arg})"
+                                    f"SELECT 1 FROM {qttn}"
+                                    f" WHERE encode({qidr}::bytea, 'hex') IN ({arg})"
                                     f" LIMIT 1"
                                 ),
                             ).fetchone()
@@ -641,10 +653,12 @@ def build_graph(db_url: str, uuid_str: str) -> dict:
                             continue
                         try:
                             arg = ",".join(f"'{h}'" for h in parent_candidates)
+                            qttn = quote_ident(ttn, db_url)
+                            qidr = quote_ident("_idrref", db_url)
                             trow = conn.execute(
                                 text(
-                                    f"SELECT 1 FROM {ttn}"
-                                    f" WHERE encode(_IDRRef, 'hex') IN ({arg})"
+                                    f"SELECT 1 FROM {qttn}"
+                                    f" WHERE encode({qidr}::bytea, 'hex') IN ({arg})"
                                     f" LIMIT 1"
                                 ),
                             ).fetchone()
@@ -695,6 +709,106 @@ def build_graph(db_url: str, uuid_str: str) -> dict:
         engine.dispose()
 
     return result
+
+
+def graph_mermaid(db_url: str, uuid_str: str) -> str:
+    """Generate a Mermaid classDiagram for the object's relationship graph.
+
+    Each connected object (owner, parent, reference target) is a class.
+    Relationships show human-readable field names (not _fld{N}rref).
+    """
+    info = build_graph(db_url, uuid_str)
+    if "error" in info:
+        return f"ERROR: {info['error']}"
+
+    lines: list[str] = []
+    lines.append("```mermaid")
+    lines.append("classDiagram")
+
+    added: set[str] = set()
+    tech = info.get("tech_name") or "Unknown"
+
+    def _ensure_class(name: str, table: str | None, category: str | None) -> None:
+        """Add a class block if not already added."""
+        if name and name not in added:
+            added.add(name)
+            lines.append("")
+            lines.append(f"    class {name} {{")
+            if table:
+                lines.append(f"        {table}")
+            if category:
+                lines.append(f"        {category}")
+            lines.append("    }")
+
+    # Main object class
+    _ensure_class(tech, info.get("table_name"), info.get("category"))
+    for fn in info.get("field_names") or []:
+        if fn and fn != tech.strip("()"):
+            lines.append(f"        + {fn}")
+
+    # Owner
+    owner = info.get("owner")
+    if owner:
+        otn = owner.get("tech_name") or "Unknown"
+        _ensure_class(otn, owner.get("table_name"), owner.get("category"))
+        lines.append(f"    {otn} <|-- {tech} : владелец")
+
+    # Parent
+    parent = info.get("parent")
+    if parent:
+        ptn = parent.get("tech_name") or "Unknown"
+        _ensure_class(ptn, parent.get("table_name"), parent.get("category"))
+        lines.append(f"    {ptn} <|-- {tech} : родитель")
+
+    # References
+    refs = info.get("references") or []
+    rref_targets = info.get("rref_targets") or []
+    rtref_targets = info.get("rtref_targets") or []
+
+    for ref in refs:
+        col = ref["column"]
+        fn = ref["field_name"]
+        rtype = ref["type"]
+        label = fn if fn and fn != col else col
+
+        target = None
+        if rtype == "rref":
+            for rr in rref_targets:
+                if rr["column"] == col:
+                    target = rr.get("target")
+                    break
+        elif rtype == "rtref":
+            for rr in rtref_targets:
+                if rr["column"] == col:
+                    target = rr.get("target")
+                    break
+
+        if target:
+            ttn = target.get("tech_name") or "Unknown"
+            _ensure_class(ttn, target.get("table_name"), target.get("category"))
+            lines.append(f"    {ttn} <.. {tech} : {label}")
+        elif rtype == "rtref":
+            suffix = None
+            for rr in rtref_targets:
+                if rr["column"] == col:
+                    suffix = rr.get("table_suffix")
+                    break
+            tag = f"#{suffix}" if suffix else col
+            lines.append(f"    class {col} {{")
+            lines.append(f"        {rtype} → {tag}")
+            lines.append("    }")
+            lines.append(f"    {col} <.. {tech} : {label}")
+
+    # Reverse references (show as dotted lines from other objects to this one)
+    reverse = info.get("reverse_rtref")
+    if reverse:
+        for rv in reverse:
+            rtn = rv.get("tech_name") or "Unknown"
+            _ensure_class(rtn, rv.get("table_name"), rv.get("category"))
+            lines.append(f"    {rtn} ..> {tech} : {rv.get('column', '')}")
+
+    lines.append("```")
+    return "\n".join(lines)
 
 
 def graph_text(db_url: str, uuid_str: str) -> str:
@@ -752,7 +866,12 @@ def graph_text(db_url: str, uuid_str: str) -> str:
             col = ref["column"]
             fn = ref["field_name"]
             rtype = ref["type"]
-            lines.append(f"  «{fn}»  ({col})  [{rtype}]")
+
+            # Show human-readable field name; hide technical _fld{N} column
+            if fn and fn != col:
+                lines.append(f"  {fn}  [{rtype}]")
+            else:
+                lines.append(f"  {col}  [{rtype}]")
 
             # Show resolved rref target
             if rtype == "rref":
@@ -761,11 +880,11 @@ def graph_text(db_url: str, uuid_str: str) -> str:
                         tgt = rr.get("target")
                         if tgt:
                             lines.append(
-                                f"         ↳ {tgt['tech_name']} ({tgt['table_name']})"
+                                f"         → {tgt['tech_name']} ({tgt['table_name']})"
                             )
                         elif rr.get("sample_uuids"):
                             lines.append(
-                                f"         ↳ UUID: {rr['sample_uuids'][0]} (таблица не определена)"
+                                f"         → UUID: {rr['sample_uuids'][0]}"
                             )
                         break
 
@@ -776,11 +895,11 @@ def graph_text(db_url: str, uuid_str: str) -> str:
                         tgt = rr.get("target")
                         if tgt:
                             lines.append(
-                                f"         ↳ {tgt['tech_name']} ({tgt['table_name']})"
+                                f"         → {tgt['tech_name']} ({tgt['table_name']})"
                             )
                         else:
                             lines.append(
-                                f"         ↳ table suffix #{rr.get('table_suffix', '?')}"
+                                f"         → table suffix #{rr.get('table_suffix', '?')}"
                             )
                         break
 
@@ -808,4 +927,141 @@ def graph_text(db_url: str, uuid_str: str) -> str:
                 f"  {rv['tech_name']} → {rv['column']} ({rv['table_name']})"
             )
 
+    return "\n".join(lines)
+
+
+def build_global_graph(db_url: str) -> list[dict]:
+    """Build relationship graph for ALL metadata objects with tables."""
+    ctx = build_llm_context(db_url)
+
+    results: list[dict] = []
+    for obj in ctx["objects"]:
+        if not obj.get("table_name"):
+            continue
+        try:
+            g = build_graph(db_url, obj["uuid"])
+            if "error" not in g:
+                results.append(g)
+        except Exception:
+            pass
+
+    return results
+
+
+def graph_all_text(db_url: str) -> str:
+    """Human-readable text for the global graph."""
+    graphs = build_global_graph(db_url)
+    if not graphs:
+        return "(объекты с таблицами не найдены)"
+
+    lines: list[str] = []
+    lines.append(f"=== Полный граф связей ({len(graphs)} объектов) ===")
+    lines.append("")
+
+    for g in graphs:
+        tech = g.get("tech_name") or "(unnamed)"
+        tn = g.get("table_name") or "?"
+        cat = g.get("category") or "?"
+        lines.append(f"── {tech} [{tn}, {cat}] ──")
+
+        owner = g.get("owner")
+        if owner:
+            otn = owner.get("tech_name") or "?"
+            lines.append(f"  Владелец: {otn}")
+
+        parent = g.get("parent")
+        if parent:
+            ptn = parent.get("tech_name") or "?"
+            lines.append(f"  Родитель: {ptn}")
+
+        for ref in g.get("references") or []:
+            fn = ref.get("field_name", "")
+            rtype = ref.get("type", "")
+            if fn and fn != ref.get("column", ""):
+                lines.append(f"  → {fn} [{rtype}]")
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def graph_all_mermaid(db_url: str) -> str:
+    """Mermaid classDiagram for ALL objects and their relationships."""
+    graphs = build_global_graph(db_url)
+    if not graphs:
+        return "```mermaid\nclassDiagram\n    class Error {\n        no objects\n    }\n```"
+
+    lines: list[str] = []
+    lines.append("```mermaid")
+    lines.append("classDiagram")
+
+    added: set[str] = set()
+
+    def _ensure_class(name: str, table: str | None, category: str | None) -> None:
+        if name and name not in added:
+            added.add(name)
+            lines.append("")
+            lines.append(f"    class {name} {{")
+            if table:
+                lines.append(f"        {table}")
+            if category:
+                lines.append(f"        {category}")
+            lines.append("    }")
+
+    # First pass: add all classes
+    for g in graphs:
+        tech = g.get("tech_name") or "Unknown"
+        _ensure_class(tech, g.get("table_name"), g.get("category"))
+
+    # Second pass: relationships
+    for g in graphs:
+        tech = g.get("tech_name") or "Unknown"
+
+        owner = g.get("owner")
+        if owner:
+            otn = owner.get("tech_name") or "Unknown"
+            _ensure_class(otn, owner.get("table_name"), owner.get("category"))
+            lines.append(f"    {otn} <|-- {tech} : владелец")
+
+        parent = g.get("parent")
+        if parent:
+            ptn = parent.get("tech_name") or "Unknown"
+            _ensure_class(ptn, parent.get("table_name"), parent.get("category"))
+            lines.append(f"    {ptn} <|-- {tech} : родитель")
+
+        rref_targets = g.get("rref_targets") or []
+        rtref_targets = g.get("rtref_targets") or []
+
+        for ref in g.get("references") or []:
+            col = ref["column"]
+            fn = ref["field_name"]
+            rtype = ref["type"]
+            label = fn if fn and fn != col else col
+
+            target = None
+            if rtype == "rref":
+                for rr in rref_targets:
+                    if rr["column"] == col:
+                        target = rr.get("target")
+                        break
+            elif rtype == "rtref":
+                for rr in rtref_targets:
+                    if rr["column"] == col:
+                        target = rr.get("target")
+                        break
+
+            if target:
+                ttn = target.get("tech_name") or "Unknown"
+                _ensure_class(ttn, target.get("table_name"), target.get("category"))
+                lines.append(f"    {ttn} <.. {tech} : {label}")
+
+        # Reverse references
+        reverse = g.get("reverse_rtref")
+        if reverse:
+            for rv in reverse:
+                rtn = rv.get("tech_name") or "Unknown"
+                _ensure_class(rtn, rv.get("table_name"), rv.get("category"))
+                lines.append(f"    {rtn} ..> {tech} : {rv.get('column', '')}")
+
+    lines.append("```")
     return "\n".join(lines)

@@ -43,8 +43,9 @@ src/py1cv8/
 ├── resolve_uuid.py      # resolve — UUID → _Description / _Code (метаданные + данные)
 ├── blob_fetch.py        # Извлечение и декомпрессия блобов config/configcas
 ├── v8unpack_types.py    # type_num → v8unpack-имена
-├── list_tables.py       # tables — маппинг tech_name → physical table
-├── graph.py             # graph — граф связей объекта (owner, parent, refs, reverse)
+├── list_tables.py    # tables — маппинг tech_name → physical table
+├── lookup_uuid.py    # lookup — глубокий поиск UUID по всем таблицам
+├── graph.py          # graph — граф связей объекта (owner, parent, refs, reverse)
 └── __main__.py          # Точка входа: диспетчеризация по командам
 ```
 

@@ -70,7 +70,7 @@ def find_objects(
             keyword_lower,
             [v.lower() for v in pool_map.values()],
             n=limit - len(results),
-            cutoff=0.4,
+            cutoff=0.6,
         )
 
         for obj in ctx["objects"]:
