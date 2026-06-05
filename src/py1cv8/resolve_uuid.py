@@ -21,6 +21,14 @@ def _normalise_uuid(raw: str) -> str:
     return raw.replace("-", "").strip().lower()
 
 
+def _format_uuid(hex_str: str) -> str:
+    """Format 32-char hex as 8-4-4-4-12 UUID."""
+    h = hex_str.strip().lower().replace("-", "")
+    if len(h) != 32:
+        return hex_str
+    return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+
+
 def _uuid_to_1c_idrref_hex(uuid_hex: str) -> str:
     """Convert standard UUID hex to 1C mixed-endian format for _IDRRef.
 
@@ -49,22 +57,40 @@ def _uuid_to_1c_idrref_hex(uuid_hex: str) -> str:
     )
 
 
-def _hex_where_clause(table: str, uuid_hex: str, db_url: str) -> str:
-    """Build SELECT for _Description, _Code matching _IDRRef against hex UUID."""
+def _find_row_by_uuid(
+    conn, table: str, uuid_hex: str, db_url: str,
+) -> dict[str, Any] | None:
+    """Search *table* for a row matching *uuid_hex* in _IDRRef (any byte-order).
+
+    Uses SELECT * so it works on any table regardless of columns.
+    Returns a dict of column_name → value, or None if not found/error.
+    """
     idrref_hex = _uuid_to_1c_idrref_hex(uuid_hex)
     tbl = quote_ident(table, db_url)
-    desc = quote_ident("_Description", db_url)
-    code = quote_ident("_Code", db_url)
     idr = quote_ident("_IDRRef", db_url)
+
     if is_postgres_url(db_url):
-        return (
-            f"SELECT {desc}, {code} FROM {tbl} "
-            f"WHERE encode({idr}, 'hex') IN ('{uuid_hex}', '{idrref_hex}')"
+        sql = text(
+            f"SELECT * FROM {tbl}"
+            f" WHERE encode({idr}, 'hex') IN ('{uuid_hex}', '{idrref_hex}')"
+            f" LIMIT 1"
         )
-    return (
-        f"SELECT {desc}, {code} FROM {tbl} "
-        f"WHERE LOWER(CONVERT(VARCHAR(32), {idr}, 2)) IN ('{uuid_hex}', '{idrref_hex}')"
-    )
+    else:
+        sql = text(
+            f"SELECT TOP 1 * FROM {tbl}"
+            f" WHERE LOWER(CONVERT(VARCHAR(32), {idr}, 2))"
+            f" IN ('{uuid_hex}', '{idrref_hex}')"
+        )
+
+    try:
+        result = conn.execute(sql)
+        row = result.fetchone()
+        if row:
+            keys = list(result.keys())
+            return dict(zip(keys, row, strict=True))
+    except Exception:
+        pass
+    return None
 
 
 def resolve_uuid(
@@ -110,7 +136,7 @@ def resolve_uuid(
         results.append(
             {
                 "table": meta_obj.get("table_name"),
-                "uuid": uuid_str,
+                "uuid": _format_uuid(hex_val),
                 "description": None,
                 "code": None,
                 "tech_name": meta_obj.get("tech_name"),
@@ -144,24 +170,19 @@ def resolve_uuid(
         try:
             with engine.connect() as conn:
                 for tbl in tables:
-                    sql = text(_hex_where_clause(tbl, hex_val, db_url))
-                    try:
-                        result = conn.execute(sql)
-                        for row in result.fetchall():
-                            results.append(
-                                {
-                                    "table": tbl,
-                                    "uuid": uuid_str,
-                                    "description": row[0] if len(row) > 0 else None,
-                                    "code": row[1] if len(row) > 1 else None,
-                                    "tech_name": None,
-                                    "category": None,
-                                    "source": "data",
-                                }
-                            )
-                    except Exception:
-                        continue
-                    if results:
+                    row_dict = _find_row_by_uuid(conn, tbl, hex_val, db_url)
+                    if row_dict:
+                        results.append(
+                            {
+                                "table": tbl,
+                                "uuid": _format_uuid(hex_val),
+                                "description": row_dict.get("_Description"),
+                                "code": row_dict.get("_Code"),
+                                "tech_name": None,
+                                "category": None,
+                                "source": "data",
+                            }
+                        )
                         break
         finally:
             engine.dispose()
@@ -170,7 +191,7 @@ def resolve_uuid(
         results.append(
             {
                 "table": None,
-                "uuid": uuid_str,
+                "uuid": _format_uuid(hex_val),
                 "description": None,
                 "code": None,
                 "tech_name": None,

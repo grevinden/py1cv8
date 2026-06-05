@@ -12,6 +12,7 @@ from py1cv8.blob_fetch import fetch_blob
 from py1cv8.config import TYPE_DISCRIMINATOR_MAP
 from py1cv8.context import build_llm_context
 from py1cv8.db import quote_ident
+from py1cv8.resolve_uuid import resolve_uuid
 
 STANDARD_COLUMNS: dict[str, str] = {
     "_idrref": "Primary UUID key",
@@ -218,11 +219,13 @@ def _summarise_value(
     val: Any,
     col_name: str = "",
     rtref_targets: dict | None = None,
+    resolve_map: dict[str, dict] | None = None,
 ) -> str:
     """Short printable summary of a cell value.
 
     For _rtref columns, decode and show the target table.
     For _type columns, show the type discriminator meaning.
+    If *resolve_map* is provided, known UUIDs are shown with resolved names.
     """
     if val is None:
         return "NULL"
@@ -242,7 +245,15 @@ def _summarise_value(
         if len(raw) == 16:
             import uuid
             try:
-                return str(uuid.UUID(bytes=raw))
+                u = str(uuid.UUID(bytes=raw))
+                if resolve_map and u in resolve_map:
+                    r = resolve_map[u]
+                    desc = r.get("description") or r.get("tech_name") or ""
+                    code = r.get("code") or ""
+                    tag = f"{desc} ({code})" if code else desc
+                    if tag:
+                        return f"{u} → {tag}"
+                return u
             except Exception:
                 pass
         return f"<{len(raw)} bytes>"
@@ -252,10 +263,56 @@ def _summarise_value(
     return s
 
 
+def _build_resolve_map(
+    db_url: str,
+    sample_rows: list[dict],
+    rtref_targets: dict[str, dict],
+) -> dict[str, dict]:
+    """Build a map of uuid → resolved info for all UUID values in sample data."""
+    resolve_map: dict[str, dict] = {}
+    if not sample_rows:
+        return resolve_map
+
+    col_names = list(sample_rows[0].keys())
+    seen_uuids: set[str] = set()
+
+    for cn in col_names:
+        for row in sample_rows:
+            val = row.get(cn)
+            if val is None:
+                continue
+            raw = bytes(val) if isinstance(val, (bytes, memoryview)) else b""
+            if len(raw) != 16:
+                continue
+            import uuid
+            try:
+                u = str(uuid.UUID(bytes=raw))
+            except Exception:
+                continue
+            if u in seen_uuids:
+                continue
+            seen_uuids.add(u)
+
+            # If column is _rtref, use the known target table for faster lookup
+            hint = None
+            if cn in rtref_targets:
+                hint = rtref_targets[cn].get("table_name")
+
+            try:
+                resolved = resolve_uuid(db_url, u, table_name=hint, limit=1)
+                if resolved and resolved[0].get("source"):
+                    resolve_map[u] = resolved[0]
+            except Exception:
+                pass
+
+    return resolve_map
+
+
 def describe_object(
     db_url: str,
     uuid_str: str,
     sample_limit: int = 3,
+    resolve_refs: bool = False,
 ) -> dict:
     """Build a full description dict for *uuid_str*.
 
@@ -299,6 +356,10 @@ def describe_object(
 
         sample_rows = _get_sample_data(db_url, table, limit=sample_limit)
         rtref_targets = _decode_rtref_values(sample_rows, ctx)
+        resolve_map = (
+            _build_resolve_map(db_url, sample_rows, rtref_targets)
+            if resolve_refs else {}
+        )
         result["column_descriptions"] = _get_column_descriptions(
             schema, rtref_targets=rtref_targets,
         )
@@ -308,7 +369,10 @@ def describe_object(
         for row in sample_rows:
             formatted.append(
                 {
-                    k: _summarise_value(v, col_name=k, rtref_targets=rtref_targets)
+                    k: _summarise_value(
+                        v, col_name=k, rtref_targets=rtref_targets,
+                        resolve_map=resolve_map,
+                    )
                     for k, v in row.items()
                 }
             )
@@ -349,9 +413,10 @@ def describe_text(
     db_url: str,
     uuid_str: str,
     sample_limit: int = 3,
+    resolve_refs: bool = False,
 ) -> str:
     """Human-readable text description of a 1C metadata object."""
-    info = describe_object(db_url, uuid_str, sample_limit=sample_limit)
+    info = describe_object(db_url, uuid_str, sample_limit=sample_limit, resolve_refs=resolve_refs)
 
     lines: list[str] = []
 

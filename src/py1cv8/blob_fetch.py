@@ -124,12 +124,12 @@ def fetch_blob(
         type_num = None
 
         txt = decode_blob_chunk(dec) or dec.decode("utf-8", errors="replace").lstrip("\ufeff")
-        m = re.search(r"\{1,\s*\r?\n?\{(\d+)", txt[:2000])
+        m = re.search(r"\{1,\s*\r?\n?\{(\d+)", txt[:5000])
         if m:
             candidate = int(m.group(1))
             if 0 <= candidate <= 99:
                 type_num = candidate
-            content = txt[:10000]
+            content = txt[:50000]
 
         if dec[:6] == b"MOXCEL" and len(dec) >= 13:
             tn = struct.unpack("<H", dec[11:13])[0]
@@ -140,7 +140,7 @@ def fetch_blob(
                 "utf-8", errors="replace"
             ).lstrip("\ufeff")
             if not content:
-                content = txt2[:10000]
+                content = txt2[:50000]
 
         if content is None:
             content = repr(dec[:500])

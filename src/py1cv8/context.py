@@ -109,6 +109,9 @@ def build_llm_context(db_url: str) -> dict:
     for uuid_val, info in meta_map.items():
         type_num = info.get("type_num")
         tech_name = info.get("tech_name", "")
+        # Skip garbage entries — malformed tech_name from parser artifacts
+        if not tech_name or tech_name in (",0}", "{2,") or tech_name.startswith(",0"):
+            continue
         category = TYPE_MAP.get(type_num, "Unknown") if type_num is not None else "Unknown"
         table_name = dbnames_index.get(uuid_val)
         obj: dict = {

@@ -43,6 +43,10 @@ def context(
             show_envvar=True,
         ),
     ],
+    with_tables: Annotated[
+        bool,
+        typer.Option("--with-tables", "-t", help="Only show objects that have a physical table"),
+    ] = False,
     pretty: Annotated[
         bool,
         typer.Option("--pretty", "-p", help="Pretty-print JSON output"),
@@ -52,6 +56,9 @@ def context(
     from py1cv8.context import build_llm_context
 
     ctx = build_llm_context(db_url)
+    if with_tables:
+        ctx["objects"] = [o for o in ctx["objects"] if o.get("table_name")]
+        ctx["object_count"] = len(ctx["objects"])
     print_json(ctx, pretty=pretty)
 
 
@@ -241,11 +248,15 @@ def describe(
         int,
         typer.Option("--sample-rows", "-n", help="Number of sample data rows"),
     ] = 3,
+    resolve_refs: Annotated[
+        bool,
+        typer.Option("--resolve", "-r", help="Resolve UUID refs to names in sample data"),
+    ] = False,
 ) -> None:
     """Describe a 1C metadata object — context + schema + blob + sample data."""
     from py1cv8.describe_object import describe_text
 
-    text = describe_text(db_url, uuid, sample_limit=sample_rows)
+    text = describe_text(db_url, uuid, sample_limit=sample_rows, resolve_refs=resolve_refs)
     print_text(text)
 
 

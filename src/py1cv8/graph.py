@@ -43,8 +43,13 @@ def _extract_field_names(blob_content: str) -> list[str]:
 
     Skips the first ``{1,0,OBJ_UUID},"Name"`` (the object itself).
     Returns subsequent field names in order.
+
+    Tolerates optional whitespace between brace, comma and quotes.
     """
-    matches = re.findall(r'\{1,0,[^}]+\},"([^"]+)"', blob_content)
+    matches = re.findall(
+        r'\{1,0\s*,\s*[^}]+\}\s*,\s*"([^"]+)"',
+        blob_content,
+    )
     return matches[1:] if len(matches) > 1 else []
 
 
@@ -52,21 +57,29 @@ def _build_reference_columns(
     db_url: str,
     table_name: str,
     obj_uuid: str,
+    field_names: list[str] | None = None,
 ) -> list[dict]:
     """Build list of reference columns with metadata field names.
 
     Maps ``_rref`` / ``_rtref`` columns to blob field names by
     positional order among reference columns.
+
+    Parameters
+    ----------
+    field_names
+        Pre-extracted field names from the blob (avoids double-fetch).
+        If None, fetches and extracts from the blob.
     """
     schema_columns = _get_table_schema(db_url, table_name)
 
-    field_names: list[str] = []
-    try:
-        blobs = fetch_blob(db_url, uuid=obj_uuid, limit=1)
-        if blobs and blobs[0].get("content"):
-            field_names = _extract_field_names(blobs[0]["content"])
-    except Exception:
-        pass
+    if field_names is None:
+        field_names = []
+        try:
+            blobs = fetch_blob(db_url, uuid=obj_uuid, limit=1)
+            if blobs and blobs[0].get("content"):
+                field_names = _extract_field_names(blobs[0]["content"])
+        except Exception:
+            pass
 
     rref_re = re.compile(r"_fld\d+rref$", re.IGNORECASE)
     rtref_re_col = re.compile(r"_fld\d+rtref$", re.IGNORECASE)
@@ -523,7 +536,9 @@ def build_graph(db_url: str, uuid_str: str) -> dict:
         result["field_names"] = field_names
 
         # 2. Reference columns with metadata names
-        ref_cols = _build_reference_columns(db_url, table_name, obj_uuid)
+        ref_cols = _build_reference_columns(
+            db_url, table_name, obj_uuid, field_names,
+        )
         result["references"] = ref_cols
 
         # 3. _owneridrref — resolve owner
@@ -737,7 +752,7 @@ def graph_text(db_url: str, uuid_str: str) -> str:
             col = ref["column"]
             fn = ref["field_name"]
             rtype = ref["type"]
-            lines.append(f"  {col}  →  «{fn}»  [{rtype}]")
+            lines.append(f"  «{fn}»  ({col})  [{rtype}]")
 
             # Show resolved rref target
             if rtype == "rref":
