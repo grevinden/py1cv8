@@ -1,14 +1,11 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal
 
 echo === Intel oneAPI + Nuitka + clang-cl + LTO ===
 echo.
 
 call "C:\Program Files (x86)\Intel\oneAPI\2026.0\oneapi-vars.bat" --include-intel-llvm
-if %errorlevel% neq 0 (
-    echo ERROR: Intel oneAPI not found at C:\Program Files (x86)\Intel\oneAPI\2026.0
-    exit /b 1
-)
+if errorlevel 1 exit /b 1
 
 python -m nuitka ^
     --onefile ^
@@ -27,7 +24,7 @@ python -m nuitka ^
     --include-windows-runtime-dlls=yes ^
     src/py1cv8
 
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo === BUILD FAILED ===
     exit /b 1
 )

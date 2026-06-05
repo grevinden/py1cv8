@@ -15,7 +15,7 @@ from sqlalchemy import text
 
 from py1cv8.compress import decode_blob_chunk, try_decompress
 from py1cv8.config import TYPE_MAP
-from py1cv8.db import get_session
+from py1cv8.db import get_session, quote_ident
 from py1cv8.metadata_binary import parse_metadata_blob
 from py1cv8.models import Config, ConfigCas
 
@@ -92,7 +92,7 @@ def fetch_blob(
         session.close()
         raise ValueError(f"Unknown table: {table!r}. Choose from: config, configcas")
 
-    rows = _query(session, model_cls, uuid, filename, partno, limit)
+    rows = _query(session, model_cls, uuid, filename, partno, limit, db_url)
     session.close()
 
     results: list[dict] = []
@@ -166,7 +166,7 @@ def fetch_blob(
 
 
 def _query(
-    session, model_cls, uuid, filename, partno, limit
+    session, model_cls, uuid, filename, partno, limit, db_url
 ):
     table_name = "config" if model_cls.__tablename__ == "config" else "configcas"
 
@@ -186,7 +186,8 @@ def _query(
 
     where_clause = " AND ".join(conditions) if conditions else "1=1"
     sql = text(
-        f"SELECT * FROM {table_name} WHERE {where_clause} "
+        f"SELECT * FROM {quote_ident(table_name, db_url)}"
+        f" WHERE {where_clause} "
         f"ORDER BY filename, partno LIMIT {int(limit)}"
     )
     result = session.execute(sql, params)

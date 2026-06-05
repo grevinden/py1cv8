@@ -16,12 +16,9 @@ from sqlalchemy import create_engine, text
 from py1cv8.blob_fetch import fetch_blob
 from py1cv8.config import TYPE_DISCRIMINATOR_MAP
 from py1cv8.context import build_llm_context
+from py1cv8.db import is_postgres_url, quote_ident
 from py1cv8.describe_object import _get_table_schema  # reuse schema discovery
 from py1cv8.resolve_uuid import _uuid_to_1c_idrref_hex
-
-
-def _is_postgres(db_url: str) -> bool:
-    return "postgresql" in db_url or "postgres" in db_url
 
 
 def _resolve_from_table_suffix(suffix: int, ctx: dict) -> dict | None:
@@ -137,16 +134,17 @@ def _find_type_columns(db_url: str, table_name: str) -> list[dict]:
             results: list[dict] = []
             for tc in type_cols:
                 cn = tc["column_name"]
-                is_pg = _is_postgres(db_url)
+                qcn = quote_ident(cn, db_url)
+                is_pg = is_postgres_url(db_url)
                 if is_pg:
-                    sql_snippet = f"encode({cn}, 'hex')"
+                    sql_snippet = f"encode({qcn}, 'hex')"
                 else:
-                    sql_snippet = f"LOWER(CONVERT(VARCHAR(MAX), {cn}, 2))"
+                    sql_snippet = f"LOWER(CONVERT(VARCHAR(MAX), {qcn}, 2))"
                 raw = conn.execute(
                     text(
                         f"SELECT DISTINCT {sql_snippet} AS h"
-                        f" FROM {table_name}"
-                        f" WHERE {cn} IS NOT NULL AND length({cn}) > 0"
+                        f" FROM {quote_ident(table_name, db_url)}"
+                        f" WHERE {qcn} IS NOT NULL AND length({qcn}) > 0"
                         f" LIMIT 5"
                     ),
                 ).fetchall()
@@ -192,7 +190,7 @@ def _resolve_uuid_against_tables(
     candidates = {uuid_hex_std}
     with suppress(Exception):
         candidates.add(_uuid_to_1c_idrref_hex(uuid_hex_std))
-    is_pg = _is_postgres(db_url)
+    is_pg = is_postgres_url(db_url)
 
     engine = create_engine(
         db_url,
@@ -206,18 +204,20 @@ def _resolve_uuid_against_tables(
                 if not tn:
                     continue
                 try:
+                    qtn = quote_ident(tn, db_url)
+                    qidr = quote_ident("_IDRRef", db_url)
                     if is_pg:
                         arg = ",".join(f"'{h}'" for h in candidates)
                         sql = text(
-                            f"SELECT 1 FROM {tn}"
-                            f" WHERE encode(_IDRRef, 'hex') IN ({arg})"
+                            f"SELECT 1 FROM {qtn}"
+                            f" WHERE encode({qidr}, 'hex') IN ({arg})"
                             f" LIMIT 1"
                         )
                     else:
                         arg = ",".join(f"'{h}'" for h in candidates)
                         sql = text(
-                            f"SELECT 1 FROM {tn}"
-                            f" WHERE LOWER(CONVERT(VARCHAR(32), _IDRRef, 2))"
+                            f"SELECT 1 FROM {qtn}"
+                            f" WHERE LOWER(CONVERT(VARCHAR(32), {qidr}, 2))"
                             f" IN ({arg}) LIMIT 1"
                         )
                     row = conn.execute(sql).fetchone()
@@ -249,7 +249,7 @@ def _find_reverse_rtref(
     )
     try:
         with engine.connect() as conn:
-            is_pg = _is_postgres(db_url)
+            is_pg = is_postgres_url(db_url)
             suffix_bytes = struct.pack(">I", table_suffix)
             suffix_hex = suffix_bytes.hex()
 
@@ -269,16 +269,18 @@ def _find_reverse_rtref(
                         continue
 
                     for rc in rtref_cols:
+                        qtn = quote_ident(tn, db_url)
+                        qrc = quote_ident(rc, db_url)
                         if is_pg:
                             sql_text = (
-                                f"SELECT 1 FROM {tn}"
-                                f" WHERE encode({rc}, 'hex') LIKE '{suffix_hex}%'"
+                                f"SELECT 1 FROM {qtn}"
+                                f" WHERE encode({qrc}, 'hex') LIKE '{suffix_hex}%'"
                                 f" LIMIT 1"
                             )
                         else:
                             sql_text = (
-                                f"SELECT TOP 1 1 FROM {tn}"
-                                f" WHERE LOWER(CONVERT(VARCHAR(32), {rc}, 2))"
+                                f"SELECT TOP 1 1 FROM {qtn}"
+                                f" WHERE LOWER(CONVERT(VARCHAR(32), {qrc}, 2))"
                                 f" LIKE '{suffix_hex}%'"
                             )
                         row = conn.execute(text(sql_text)).fetchone()
@@ -336,23 +338,24 @@ def _sample_rref_uuids(
                 )
                 ref_index += 1
 
-                is_pg = _is_postgres(db_url)
+                is_pg = is_postgres_url(db_url)
+                qcol = quote_ident(col_name, db_url)
                 if is_pg:
-                    sql_snippet = f"encode({col_name}, 'hex')"
+                    sql_snippet = f"encode({qcol}, 'hex')"
                 else:
-                    sql_snippet = f"LOWER(CONVERT(VARCHAR(MAX), {col_name}, 2))"
+                    sql_snippet = f"LOWER(CONVERT(VARCHAR(MAX), {qcol}, 2))"
 
                 zero_check = (
-                    f" AND encode({col_name}, 'hex') != '00000000000000000000000000000000'"
+                    f" AND encode({qcol}, 'hex') != '00000000000000000000000000000000'"
                     if is_pg
                     else ""
                 )
                 raw = conn.execute(
                     text(
                         f"SELECT DISTINCT {sql_snippet} AS h"
-                        f" FROM {table_name}"
-                        f" WHERE {col_name} IS NOT NULL"
-                        f" AND length({col_name}) = 16"
+                        f" FROM {quote_ident(table_name, db_url)}"
+                        f" WHERE {qcol} IS NOT NULL"
+                        f" AND length({qcol}) = 16"
                         f"{zero_check}"
                         f" LIMIT 4"
                     ),
@@ -408,13 +411,18 @@ def _sample_rtref_targets(
     )
     try:
         with engine.connect() as conn:
-            is_pg = _is_postgres(db_url)
+            is_pg = is_postgres_url(db_url)
             cols_sql = ", ".join(
-                f"encode({c}, 'hex') AS {c}" if is_pg else c
+                f"encode({quote_ident(c, db_url)}, 'hex') AS {quote_ident(c, db_url)}"
+                if is_pg else quote_ident(c, db_url)
                 for c in rtref_col_names
             )
             raw = conn.execute(
-                text(f"SELECT {cols_sql} FROM {table_name} LIMIT :lim"),
+                text(
+                    f"SELECT {cols_sql}"
+                    f" FROM {quote_ident(table_name, db_url)}"
+                    f" LIMIT :lim"
+                ),
                 {"lim": sample_limit},
             )
 
@@ -521,13 +529,15 @@ def build_graph(db_url: str, uuid_str: str) -> dict:
         # 3. _owneridrref — resolve owner
         if _has_owneridrref(db_url, table_name):
             with engine.connect() as conn:
-                is_pg = _is_postgres(db_url)
+                is_pg = is_postgres_url(db_url)
+                qtn = quote_ident(table_name, db_url)
+                qown = quote_ident("_owneridrref", db_url) if is_pg else "_owneridrref"
                 if is_pg:
                     owner_row = conn.execute(
                         text(
-                            f"SELECT DISTINCT encode(_owneridrref, 'hex')"
-                            f" FROM {table_name}"
-                            f" WHERE _owneridrref IS NOT NULL"
+                            f"SELECT DISTINCT encode({qown}, 'hex')"
+                            f" FROM {qtn}"
+                            f" WHERE {qown} IS NOT NULL"
                             f" LIMIT 1"
                         ),
                     ).fetchone()
@@ -535,9 +545,9 @@ def build_graph(db_url: str, uuid_str: str) -> dict:
                     owner_row = conn.execute(
                         text(
                             f"SELECT DISTINCT"
-                            f" LOWER(CONVERT(VARCHAR(32), _owneridrref, 2))"
-                            f" FROM {table_name}"
-                            f" WHERE _owneridrref IS NOT NULL"
+                            f" LOWER(CONVERT(VARCHAR(32), {qown}, 2))"
+                            f" FROM {qtn}"
+                            f" WHERE {qown} IS NOT NULL"
                             f" LIMIT 1"
                         ),
                     ).fetchone()
@@ -581,13 +591,15 @@ def build_graph(db_url: str, uuid_str: str) -> dict:
         # 4. _parentidrref — resolve parent
         if _has_parentidrref(db_url, table_name):
             with engine.connect() as conn:
-                is_pg = _is_postgres(db_url)
+                is_pg = is_postgres_url(db_url)
+                qtn = quote_ident(table_name, db_url)
+                qpar = quote_ident("_parentidrref", db_url) if is_pg else "_parentidrref"
                 if is_pg:
                     parent_row = conn.execute(
                         text(
-                            f"SELECT DISTINCT encode(_parentidrref, 'hex')"
-                            f" FROM {table_name}"
-                            f" WHERE _parentidrref IS NOT NULL"
+                            f"SELECT DISTINCT encode({qpar}, 'hex')"
+                            f" FROM {qtn}"
+                            f" WHERE {qpar} IS NOT NULL"
                             f" LIMIT 1"
                         ),
                     ).fetchone()
@@ -595,9 +607,9 @@ def build_graph(db_url: str, uuid_str: str) -> dict:
                     parent_row = conn.execute(
                         text(
                             f"SELECT DISTINCT"
-                            f" LOWER(CONVERT(VARCHAR(32), _parentidrref, 2))"
-                            f" FROM {table_name}"
-                            f" WHERE _parentidrref IS NOT NULL"
+                            f" LOWER(CONVERT(VARCHAR(32), {qpar}, 2))"
+                            f" FROM {qtn}"
+                            f" WHERE {qpar} IS NOT NULL"
                             f" LIMIT 1"
                         ),
                     ).fetchone()

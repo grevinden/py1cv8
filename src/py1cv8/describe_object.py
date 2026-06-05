@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, text
 from py1cv8.blob_fetch import fetch_blob
 from py1cv8.config import TYPE_DISCRIMINATOR_MAP
 from py1cv8.context import build_llm_context
+from py1cv8.db import quote_ident
 
 STANDARD_COLUMNS: dict[str, str] = {
     "_idrref": "Primary UUID key",
@@ -155,10 +156,13 @@ def _get_sample_data(
 
             if order_col:
                 sql = text(
-                    f"SELECT * FROM {table_name} ORDER BY {order_col} LIMIT :lim"
+                    f"SELECT * FROM {quote_ident(table_name, db_url)}"
+                    f" ORDER BY {order_col} LIMIT :lim"
                 )
             else:
-                sql = text(f"SELECT * FROM {table_name} LIMIT :lim")
+                sql = text(
+                    f"SELECT * FROM {quote_ident(table_name, db_url)} LIMIT :lim"
+                )
 
             result = conn.execute(sql, {"lim": limit})
             columns = list(result.keys())

@@ -14,10 +14,7 @@ from typing import Any
 from sqlalchemy import create_engine, text
 
 from py1cv8.context import build_llm_context
-
-
-def _is_postgres(db_url: str) -> bool:
-    return "postgresql" in db_url or "postgres" in db_url
+from py1cv8.db import is_postgres_url, quote_ident
 
 
 def _normalise_uuid(raw: str) -> str:
@@ -52,17 +49,21 @@ def _uuid_to_1c_idrref_hex(uuid_hex: str) -> str:
     )
 
 
-def _hex_where_clause(table: str, uuid_hex: str, is_pg: bool) -> str:
+def _hex_where_clause(table: str, uuid_hex: str, db_url: str) -> str:
     """Build SELECT for _Description, _Code matching _IDRRef against hex UUID."""
     idrref_hex = _uuid_to_1c_idrref_hex(uuid_hex)
-    if is_pg:
+    tbl = quote_ident(table, db_url)
+    desc = quote_ident("_Description", db_url)
+    code = quote_ident("_Code", db_url)
+    idr = quote_ident("_IDRRef", db_url)
+    if is_postgres_url(db_url):
         return (
-            f"SELECT _Description, _Code FROM {table} "
-            f"WHERE encode(_IDRRef, 'hex') IN ('{uuid_hex}', '{idrref_hex}')"
+            f"SELECT {desc}, {code} FROM {tbl} "
+            f"WHERE encode({idr}, 'hex') IN ('{uuid_hex}', '{idrref_hex}')"
         )
     return (
-        f"SELECT _Description, _Code FROM {table} "
-        f"WHERE LOWER(CONVERT(VARCHAR(32), _IDRRef, 2)) IN ('{uuid_hex}', '{idrref_hex}')"
+        f"SELECT {desc}, {code} FROM {tbl} "
+        f"WHERE LOWER(CONVERT(VARCHAR(32), {idr}, 2)) IN ('{uuid_hex}', '{idrref_hex}')"
     )
 
 
@@ -93,8 +94,6 @@ def resolve_uuid(
         Each dict: table, uuid, description, code, tech_name, category.
     """
     hex_val = _normalise_uuid(uuid_str)
-    is_pg = _is_postgres(db_url)
-
     results: list[dict[str, Any]] = []
     ctx = build_llm_context(db_url)
 
@@ -145,7 +144,7 @@ def resolve_uuid(
         try:
             with engine.connect() as conn:
                 for tbl in tables:
-                    sql = text(_hex_where_clause(tbl, hex_val, is_pg))
+                    sql = text(_hex_where_clause(tbl, hex_val, db_url))
                     try:
                         result = conn.execute(sql)
                         for row in result.fetchall():

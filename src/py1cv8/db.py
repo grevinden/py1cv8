@@ -18,6 +18,22 @@ _sessions: dict[str, sessionmaker] = {}
 _base_url: str = "postgresql+psycopg2://postgres:qwaseD12@localhost:5433"
 
 
+def is_postgres_url(db_url: str) -> bool:
+    """Check if the URL points to a PostgreSQL database."""
+    return "postgresql" in db_url or "postgres" in db_url
+
+
+def quote_ident(name: str, db_url: str) -> str:
+    """Quote an identifier for use in SQL queries.
+
+    PostgreSQL uses double quotes, MSSQL uses square brackets.
+    This prevents case-folding and reserved-word issues with 1C identifiers.
+    """
+    if is_postgres_url(db_url):
+        return f'"{name}"'
+    return f"[{name}]"
+
+
 def set_base_url(url: PostgresDsn | str) -> None:
     """Set the base database URL (without database name).
 
