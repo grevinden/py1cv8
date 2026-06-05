@@ -1,8 +1,8 @@
 """Binary metadata parser for 1C config/configcas blobs.
 
-  - Parse {1,\n{type pattern from decompressed config blobs
-  - Extract type_num from MOXCEL header
-  - Build UUID -> metadata map from config table (via SQLAlchemy ORM)
+- Parse {1,\n{type pattern from decompressed config blobs
+- Extract type_num from MOXCEL header
+- Build UUID -> metadata map from config table (via SQLAlchemy ORM)
 """
 
 from __future__ import annotations
@@ -13,8 +13,46 @@ from typing import Any
 
 from sqlalchemy import select
 
-from py1cv8.compress import decode_blob_chunk, try_decompress
+from py1cv8.blob.decompress import decode_blob_chunk, try_decompress
 from py1cv8.models import Config
+
+# ── Type map: type_num → category (from 1C binary config blobs) ────────────
+#
+# WARNING: type_num (0-99) is NOT globally consistent across 1C configurations.
+# The 1C platform assigns type_num per serialization format, which can vary
+# between databases. This mapping is valid for the MessageCenter DB.
+# For the test DB, see TYPE_NUM_REFERENCE in v8unpack_types.py.
+#
+# These are BROAD categories for BSL extraction output folders, NOT 1C type IDs.
+
+TYPE_MAP: dict[int, str] = {
+    0: "CommonForms",
+    1: "DataProcessors",
+    2: "CommonModules",
+    3: "Subsystems",
+    4: "DataProcessors",
+    5: "CommonAttributes",
+    6: "Roles",
+    7: "Roles",
+    8: "Ext",
+    9: "Reports",
+    12: "CommonTemplates",
+    13: "OtherTypes",
+    14: "OtherTypes",
+    16: "Constants",
+    17: "DataProcessors",
+    19: "DataProcessors",
+    20: "Enums",
+    22: "Documents",
+    26: "DocumentJournals",
+    30: "OtherTypes",
+    33: "InformationRegisters",
+    34: "ChartsOfCharacteristicTypes",
+    37: "OtherTypes",
+    40: "Documents",
+    57: "Catalogs",
+    68: "Ext",
+}
 
 # ── Metadata parser ────────────────────────────────────────────────────────
 
@@ -37,7 +75,7 @@ def parse_metadata_blob(txt: str) -> dict[str, Any] | None:
     )
     if obj_match:
         uuid_val = obj_match.group(1)
-        after_uuid = txt[obj_match.end():]
+        after_uuid = txt[obj_match.end() :]
     else:
         # Fallback: first UUID in text
         uuid_match = re.search(
@@ -47,7 +85,7 @@ def parse_metadata_blob(txt: str) -> dict[str, Any] | None:
         if not uuid_match:
             return None
         uuid_val = uuid_match.group(0)
-        after_uuid = txt[uuid_match.end():]
+        after_uuid = txt[uuid_match.end() :]
 
     name_match = re.search(r'"([^"]{2,120})"', after_uuid)
     if not name_match:
@@ -56,14 +94,34 @@ def parse_metadata_blob(txt: str) -> dict[str, Any] | None:
     tech_name = name_match.group(1)
 
     generic_prefixes = (
-        "ОбщийМодуль", "ОбщаяФорма", "ОбщийМакет", "ОбщаяКоманда",
-        "Каталог", "Роль", "Подсистема", "Перечисление",
-        "Константа", "Документ", "Отчет", "Обработка",
-        "ВнешняяОбработка", "Справочник", "РегистрСведений",
-        "РегистрНакопления", "РегистрБухгалтерии", "РегистрРасчета",
-        "БизнесПроцесс", "Задача", "ПланОбмена", "ПланВидовХарактеристик",
-        "ПланСчетов", "ПланВидовРасчета", "Последовательность",
-        "КритерийОтбора", "Модуль", "Команда",
+        "ОбщийМодуль",
+        "ОбщаяФорма",
+        "ОбщийМакет",
+        "ОбщаяКоманда",
+        "Каталог",
+        "Роль",
+        "Подсистема",
+        "Перечисление",
+        "Константа",
+        "Документ",
+        "Отчет",
+        "Обработка",
+        "ВнешняяОбработка",
+        "Справочник",
+        "РегистрСведений",
+        "РегистрНакопления",
+        "РегистрБухгалтерии",
+        "РегистрРасчета",
+        "БизнесПроцесс",
+        "Задача",
+        "ПланОбмена",
+        "ПланВидовХарактеристик",
+        "ПланСчетов",
+        "ПланВидовРасчета",
+        "Последовательность",
+        "КритерийОтбора",
+        "Модуль",
+        "Команда",
         "Расш1_",
     )
     if re.match(r"^(?:" + "|".join(generic_prefixes) + r")\d+$", tech_name):
@@ -71,7 +129,8 @@ def parse_metadata_blob(txt: str) -> dict[str, Any] | None:
 
     display_names: dict[str, str] = {}
     for dm in re.finditer(
-        r'"(ru|en|uk)","([^"]{2,200})"', after_uuid,
+        r'"(ru|en|uk)","([^"]{2,200})"',
+        after_uuid,
     ):
         lang, val = dm.group(1), dm.group(2)
         if lang not in display_names:
@@ -120,6 +179,7 @@ def build_metadata_map(dbname: str) -> dict[str, dict]:
     Calls get_session from db module directly (backward-compat).
     """
     from py1cv8.db import get_session
+
     session = get_session(dbname)
     try:
         q = select(Config).order_by(Config.partno)
@@ -178,6 +238,3 @@ def build_metadata_map(dbname: str) -> dict[str, dict]:
                         existing_fn["type_num"] = new_type_num
 
     return meta_map
-
-
-

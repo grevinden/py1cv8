@@ -9,11 +9,11 @@ from typing import Any
 
 from sqlalchemy import create_engine, text
 
-from py1cv8.blob_fetch import fetch_blob
-from py1cv8.config import TYPE_DISCRIMINATOR_MAP
+from py1cv8.blob_fetch import extract_metadata_blobs
 from py1cv8.context import build_llm_context
 from py1cv8.db import quote_ident
 from py1cv8.resolve_uuid import resolve_uuid
+from py1cv8.type_enums import TYPE_DISCRIMINATOR_MAP
 
 STANDARD_COLUMNS: dict[str, str] = {
     "_idrref": "Primary UUID key",
@@ -137,8 +137,13 @@ def _get_sample_data(
     try:
         with engine.connect() as conn:
             order_probes = [
-                "_idrref", "_period", "_recordkey", "_datakey",
-                "_key", "_number", "_lineno",
+                "_idrref",
+                "_period",
+                "_recordkey",
+                "_datakey",
+                "_key",
+                "_number",
+                "_lineno",
             ]
             col_result = conn.execute(
                 text(
@@ -162,9 +167,7 @@ def _get_sample_data(
                     f" ORDER BY {order_col} LIMIT :lim"
                 )
             else:
-                sql = text(
-                    f"SELECT * FROM {quote_ident(table_name, db_url)} LIMIT :lim"
-                )
+                sql = text(f"SELECT * FROM {quote_ident(table_name, db_url)} LIMIT :lim")
 
             result = conn.execute(sql, {"lim": limit})
             columns = list(result.keys())
@@ -248,12 +251,7 @@ def _summarise_value(
                 u = str(uuid_mod.UUID(bytes=raw))
                 if resolve_map and u in resolve_map:
                     r = resolve_map[u]
-                    tag = (
-                        r.get("description")
-                        or r.get("code")
-                        or r.get("tech_name")
-                        or ""
-                    )
+                    tag = r.get("description") or r.get("code") or r.get("tech_name") or ""
                     if tag:
                         return f"{u} → {tag}"
                 return u
@@ -310,7 +308,7 @@ def _build_resolve_map(
     return resolve_map
 
 
-def describe_object(
+async def describe_object(
     db_url: str,
     uuid_str: str,
     sample_limit: int = 3,
@@ -375,12 +373,10 @@ def describe_object(
 
         sample_rows = _get_sample_data(db_url, table, limit=sample_limit)
         rtref_targets = _decode_rtref_values(sample_rows, ctx)
-        resolve_map = (
-            _build_resolve_map(db_url, sample_rows, rtref_targets)
-            if resolve_refs else {}
-        )
+        resolve_map = _build_resolve_map(db_url, sample_rows, rtref_targets) if resolve_refs else {}
         result["column_descriptions"] = _get_column_descriptions(
-            schema, rtref_targets=rtref_targets,
+            schema,
+            rtref_targets=rtref_targets,
         )
 
         # Format sample data
@@ -389,7 +385,9 @@ def describe_object(
             formatted.append(
                 {
                     k: _summarise_value(
-                        v, col_name=k, rtref_targets=rtref_targets,
+                        v,
+                        col_name=k,
+                        rtref_targets=rtref_targets,
                         resolve_map=resolve_map,
                     )
                     for k, v in row.items()
@@ -407,9 +405,7 @@ def describe_object(
                         raw = bytes(val)
                         if len(raw) == 1:
                             byte_val = raw[0]
-                            name = TYPE_DISCRIMINATOR_MAP.get(
-                                byte_val, f"0x{byte_val:02X}"
-                            )
+                            name = TYPE_DISCRIMINATOR_MAP.get(byte_val, f"0x{byte_val:02X}")
                             type_info[col["column_name"]] = name
                             break
         if type_info:
@@ -418,8 +414,12 @@ def describe_object(
     # Fetch blob (skip if --no-blob)
     if not no_blob:
         try:
-            blobs = fetch_blob(
-                db_url, table="config", uuid=obj["uuid"], limit=1,
+            blobs = await extract_metadata_blobs(
+                db_url,
+                table="config",
+                uuid=obj["uuid"],
+                limit=1,
+                raw=True,
             )
             if blobs and blobs[0].get("content"):
                 result["blob"] = blobs[0]["content"]
@@ -429,7 +429,7 @@ def describe_object(
     return result
 
 
-def describe_text(
+async def describe_text(
     db_url: str,
     uuid_str: str,
     sample_limit: int = 3,
@@ -437,9 +437,12 @@ def describe_text(
     no_blob: bool = False,
 ) -> str:
     """Human-readable text description of a 1C metadata object."""
-    info = describe_object(
-        db_url, uuid_str, sample_limit=sample_limit,
-        resolve_refs=resolve_refs, no_blob=no_blob,
+    info = await describe_object(
+        db_url,
+        uuid_str,
+        sample_limit=sample_limit,
+        resolve_refs=resolve_refs,
+        no_blob=no_blob,
     )
 
     lines: list[str] = []
@@ -489,7 +492,7 @@ def describe_text(
         lines.append("")
         lines.append(f"--- Sample data (first {len(sample)} rows) ---")
         for i, row in enumerate(sample):
-            lines.append(f"  Row {i+1}:")
+            lines.append(f"  Row {i + 1}:")
             for k, v in row.items():
                 if k in ("_idrref",):
                     continue

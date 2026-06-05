@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import struct
-
 from py1cv8.metadata_binary import (
     extract_type_from_configcas_blob,
     parse_metadata_blob,
@@ -96,18 +94,14 @@ def test_parse_metadata_blob_multiple_languages() -> None:
 
 def test_extract_type_from_configcas_moxcel() -> None:
     """MOXCEL header with type_num in bytes 11-12."""
-    import struct
-
-    dec = b"MOXCEL" + b"\x00" * 5 + struct.pack("<H", 42) + b"\x00"
+    dec = b"MOXCEL" + b"\x00" * 5 + (42).to_bytes(2, "little") + b"\x00"
     result = extract_type_from_configcas_blob(dec)
     assert result == 42
 
 
 def test_extract_type_from_configcas_moxcel_large_type() -> None:
     """Type > 99 from MOXCEL header returns None."""
-    import struct
-
-    dec = b"MOXCEL" + b"\x00" * 5 + struct.pack("<H", 200) + b"\x00"
+    dec = b"MOXCEL" + b"\x00" * 5 + (200).to_bytes(2, "little") + b"\x00"
     result = extract_type_from_configcas_blob(dec)
     assert result is None
 
@@ -164,9 +158,8 @@ def test_all_discovered_type_nums_are_in_type_map() -> None:
     """
     import pytest
 
-    from py1cv8.config import TYPE_MAP
     from py1cv8.db import set_base_url
-    from py1cv8.metadata_binary import build_metadata_map
+    from py1cv8.metadata_binary import TYPE_MAP, build_metadata_map
 
     # Base URL — without database name, matching --db-url CLI semantics
     set_base_url("postgresql+psycopg2://postgres:qwaseD12@localhost:5433")

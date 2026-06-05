@@ -1,10 +1,10 @@
-"""Compression and blob decoding utilities.
+"""Распаковка и декодирование бинарных блобов 1С.
 
-Responsibilities:
-  - zlib decompression with multiple window sizes
-  - Binary blob → text decoding (chardet + fallback)
-  - BOM-marker splitting
-  - BSL code block extraction and cleaning
+Содержит чистые функции (без I/O) для:
+  - zlib-декомпрессии с разными размерами окна
+  - Детекции кодировки и декодирования текста (chardet + fallback)
+  - Разделения по BOM-маркерам
+  - Извлечения и очистки блоков BSL-кода
 """
 
 from __future__ import annotations
@@ -18,7 +18,14 @@ from charset_normalizer import from_bytes
 
 
 def try_decompress(data: bytes) -> bytes | None:
-    """Try zlib decompression with common window sizes."""
+    """Попробовать zlib-декомпрессию с распространёнными размерами окна.
+
+    Args:
+        data: Сжатые бинарные данные.
+
+    Returns:
+        Распакованные байты или None, если декомпрессия не удалась.
+    """
     if not data or len(data) < 4:
         return None
     for w in (-15, 15):
@@ -43,14 +50,21 @@ ENCODING_ORDER: tuple[str, ...] = (
 
 
 def decode_blob_chunk(chunk: bytes) -> str | None:
-    """Decode a blob chunk using charset detection + fallback scoring."""
+    """Декодировать бинарный чанк в текст через chardet + скоринг.
+
+    Args:
+        chunk: Бинарные данные (один блоб или BOM-раздел).
+
+    Returns:
+        Декодированный текст или None, если данные слишком короткие.
+    """
     data = chunk.lstrip(b"\xef\xbb\xbf")
     if len(data) < 4:
         return None
 
     result = from_bytes(data[:10000]).best()
     hint_enc = result.encoding if result else None
-    hint_conf = (1.0 if result else 0)
+    hint_conf = 1.0 if result else 0
 
     if hint_conf > 0.5 and hint_enc:
         enc_order = (hint_enc.lower(),) + ENCODING_ORDER
@@ -96,7 +110,14 @@ def decode_blob_chunk(chunk: bytes) -> str | None:
 
 
 def extract_code_blocks(dec: bytes) -> list[str]:
-    """Split decompressed blob into BSL code blocks by BOM markers."""
+    """Разделить распакованный блоб на блоки BSL-кода по BOM-маркерам.
+
+    Args:
+        dec: Распакованные бинарные данные блоба.
+
+    Returns:
+        Список строк с фрагментами BSL-кода.
+    """
     bom_positions = [m.start() for m in re.finditer(b"\xef\xbb\xbf", dec)]
     utf16_bom_positions = [m.start() for m in re.finditer(b"\xff\xfe", dec)]
 

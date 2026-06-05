@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-import py1cv8.db
-from py1cv8.db import (
+from py1cv8.sql.orm import engine as orm_engine
+from py1cv8.sql.orm.engine import (
     _dsn,
     _engines,
     _sessions,
@@ -23,14 +25,14 @@ def test_dsn_default() -> None:
 
 
 def test_set_base_url_clears_caches() -> None:
-    _orig_url = py1cv8.db._base_url
-    _engines["_test"] = "dummy"
-    _sessions["_test"] = "dummy"  # type: ignore[assignment]
+    _orig_url = orm_engine._base_url
+    _engines["_test"] = MagicMock(spec=Engine)
+    _sessions["_test"] = MagicMock(spec=Session)
     set_base_url("postgresql+psycopg2://other:pass@otherhost:5432")
     assert "_test" not in _engines
     assert "_test" not in _sessions
-    assert not py1cv8.db._base_url.endswith(":5433")
-    assert py1cv8.db._base_url == "postgresql+psycopg2://other:pass@otherhost:5432"
+    assert not orm_engine._base_url.endswith(":5433")
+    assert orm_engine._base_url == "postgresql+psycopg2://other:pass@otherhost:5432"
     # Restore original URL before it breaks other tests
     set_base_url(_orig_url)
 

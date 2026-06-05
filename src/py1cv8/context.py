@@ -12,11 +12,10 @@ from urllib.parse import urlparse
 
 from sqlalchemy import select
 
-from py1cv8.compress import decode_blob_chunk, try_decompress
-from py1cv8.config import TYPE_MAP
+from py1cv8.blob.decompress import decode_blob_chunk, try_decompress
 from py1cv8.db import get_session
 from py1cv8.dbnames import generate_db_name, parse_dbnames_text
-from py1cv8.metadata_binary import build_metadata_map
+from py1cv8.metadata_binary import TYPE_MAP, build_metadata_map
 from py1cv8.models import Params
 
 DBNAMES_RULES: str = """\

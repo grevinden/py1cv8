@@ -42,6 +42,7 @@ src/py1cv8/
 ├── describe_object.py   # describe — полное описание объекта (метаданные + схема + семпл + blob)
 ├── resolve_uuid.py      # resolve — UUID → _Description / _Code (метаданные + данные)
 ├── blob_fetch.py        # Извлечение и декомпрессия блобов config/configcas
+├── query_translator.py  # Трансляция запросов 1С → SQL
 ├── v8unpack_types.py    # type_num → v8unpack-имена
 ├── list_tables.py    # tables — маппинг tech_name → physical table
 ├── lookup_uuid.py    # lookup — глубокий поиск UUID по всем таблицам
@@ -150,6 +151,22 @@ table_name = f"_Reference{table_num}"
 
 ---
 
+### 0. ЯЗЫК — ТОЛЬКО РУССКИЙ
+
+**Всё мышление, рассуждения и комментарии — только на русском языке.**
+
+- Внутренние размышления (thinking) — по-русски
+- Docstring функций и модулей — по-русски
+- Комментарии в коде — по-русски
+- Общение с пользователем — по-русски
+- commit message — на русском или английском, как принято в проекте
+- Имена переменных/функций остаются на английском (PEP 8)
+
+Если задачка требует анализа англоязычной документации — читай на английском,
+но выводы формулируй по-русски.
+
+---
+
 ### 1. СТРАТЕГИЧЕСКОЕ МЫШЛЕНИЕ
 
 Прежде чем писать код:
@@ -216,12 +233,56 @@ table_name = f"_Reference{table_num}"
 
 - PEP 8 (100 символов), PEP 484 (type hints), PEP 585 (list[str] вместо typing.List)
 - PEP 604 (X|Y вместо Optional[X]), PEP 695 (type alias syntax)
-- Pydantic v2 для data-моделей, asyncio для I/O
+- Pydantic v2 для data-моделей
+- **asyncio — обязательная архитектура.** Все приложения пишутся асинхронными по умолчанию. DB, HTTP, filesystem I/O — через `aiofiles`, `asyncpg`/`aiosqlite`, `httpx`. Функции с побочными эффектами — `async def`. Синхронные вызовы разрешены только в чистых функциях (парсинг, вычисления, форматирование). Использовать `anyio`-совместимые паттерны.
 - src-layout, pyproject.toml (PEP 621), ruff + mypy + pytest
 - Modern patterns: match/case, zoneinfo, dataclass transform
 - Clean Architecture + SOLID + DI
 - trailing commas в многострочных конструкциях
 - Двойные кавычки для строк
+
+---
+
+### 6.1. ТОЛЬКО ORM — ЗАПРЕТ RAW SQL
+
+**Все обращения к БД только через SQLAlchemy ORM.** Запрещено использовать `text()`, `exec_driver_sql()` или любые другие способы выполнения сырых SQL-запросов.
+
+| Что НЕЛЬЗЯ | Чем заменять |
+|-------------|---------------|
+| `session.execute(text("SELECT * FROM t"))` | `session.query(Model).all()` / `select(Model)`.execute() |
+| Строковая интерполяция имен колонок/условий | ORM-фильтры: `Model.col.like(...)`, `Model.col == ...` |
+| `quote_ident()` для защиты имен | SQLAlchemy сам экранирует через `Model.__tablename__` |
+
+**Почему:**
+- SQL-инъекции — даже с `quote_ident()` сырой запрос остаётся уязвимым к ошибкам
+- Миграция между базами (PostgreSQL → SQLite) ломается из-за диалектных отличий
+- Mypy не может проверить типы сырого SQL — только ORM-запросы типобезопасны
+- Код проще читать и поддерживать без вставок SQL в строки Python
+
+**Исключение:** Команда `sql` (`python -m py1cv8 sql`) — это публичный SQL-proxy для LLM. Там raw SQL допустим, потому что запросы идут от нейросети, а не из кода.
+
+---
+
+### 6.2. ПИДАНТИК V2 ВМЕСТО САМОПИСНОЙ ВАЛИДАЦИИ
+
+**Везде используем Pydantic v2.** Запрещено писать свои классы-валидаторы, ручную проверку типов, самописные парсеры URL/конфига и т.п.
+
+| Что НЕЛЬЗЯ | Чем заменять |
+|-------------|---------------|
+| `def validate_url(url: str) -> str` — ручная валидация через string split | Pydantic model с `@field_validator` или `HttpUrl`/`PostgresDsn` |
+| Класс-конструктор только для docstring без функциональности | Pydantic model с реальным schema + validation |
+| Ручное преобразование `str → int/bool/datetime` в нескольких местах | Поля модели с type hints — Pydantic конвертирует сам |
+| Функции `_extract_foo()`, `_parse_bar()` для простых структур данных | Pydantic model с конструктором по-умолчанию или `model_validate()` |
+| Словарь `{"host": ..., "port": ...}` передающийся через 5 уровней вызовов | Named Pydantic model — IDE подсказывает поля, mypy проверяет типы |
+
+**Почему:**
+- Pydantic сам генерирует `ValidationError` с точным описанием проблемы
+- `model_json_schema()` даёт готовую OpenAPI/JSON Schema документацию
+- Интеграция с FastAPI, typer, и любой сериализацией из коробки
+- Mypy + pyright понимают типы полей — никаких `Any`
+- Ручная валидация = дублирование логики = баги при изменении требований
+
+**Исключение:** Чистые функции парсинга бинарных форматов (здесь Pydantic не работает).
 
 ---
 
@@ -251,6 +312,7 @@ table_name = f"_Reference{table_num}"
 После каждого изменения выполняй шаги в порядке приоритета:
 
 ### 8.1. После любого кода
+**ВСЕГДА проверяй диагностику файла через `diagnostics(path)`. Исправляй ВСЕ ошибки — код считается готовым только когда файл чистый.**
 ```bash
 python -m ruff check src/py1cv8/       # линтер (100 колонок, PEP 8)
 python -m mypy src/py1cv8/            # type hints

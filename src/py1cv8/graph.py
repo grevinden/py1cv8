@@ -6,19 +6,22 @@ instead of raw SQL column names.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import struct
 from contextlib import suppress
 from typing import Any
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
-from py1cv8.blob_fetch import fetch_blob
-from py1cv8.config import TYPE_DISCRIMINATOR_MAP
+from py1cv8.blob_fetch import extract_metadata_blobs
 from py1cv8.context import build_llm_context
 from py1cv8.db import is_postgres_url, quote_ident
 from py1cv8.describe_object import _get_table_schema  # reuse schema discovery
 from py1cv8.resolve_uuid import _uuid_to_1c_idrref_hex
+from py1cv8.sql.orm import async_session_scope
+from py1cv8.sql.types import get_db_name
+from py1cv8.type_enums import TYPE_DISCRIMINATOR_MAP
 
 
 def _resolve_from_table_suffix(suffix: int, ctx: dict) -> dict | None:
@@ -77,7 +80,7 @@ def _compute_fld_positions(schema_columns: list[dict]) -> dict[str, int]:
     return positions
 
 
-def _build_reference_columns(
+async def _build_reference_columns(
     db_url: str,
     table_name: str,
     obj_uuid: str,
@@ -99,7 +102,7 @@ def _build_reference_columns(
     if field_names is None:
         field_names = []
         try:
-            blobs = fetch_blob(db_url, uuid=obj_uuid, limit=1)
+            blobs = await extract_metadata_blobs(db_url, uuid=obj_uuid, limit=1, raw=True)
             if blobs and blobs[0].get("content"):
                 field_names = _extract_field_names(blobs[0]["content"])
         except Exception:
@@ -124,11 +127,13 @@ def _build_reference_columns(
         pos = fld_positions.get(name, -1)
         field_name = field_names[pos] if pos >= 0 and pos < len(field_names) else name
 
-        ref_cols.append({
-            "column": name,
-            "field_name": field_name,
-            "type": "rref" if is_rref else "rtref",
-        })
+        ref_cols.append(
+            {
+                "column": name,
+                "field_name": field_name,
+                "type": "rref" if is_rref else "rtref",
+            }
+        )
 
     return ref_cols
 
@@ -145,198 +150,189 @@ def _has_parentidrref(db_url: str, table_name: str) -> bool:
     return any(c["column_name"].lower() == "_parentidrref" for c in schema)
 
 
-def _find_type_columns(db_url: str, table_name: str) -> list[dict]:
-    """Find _type columns and sample their values."""
+async def _find_type_columns(db_url: str, table_name: str) -> list[dict]:
+    """Find _type columns and sample their values (async)."""
     schema = _get_table_schema(db_url, table_name)
-    type_cols = [
-        c for c in schema
-        if c["column_name"].endswith("_type")
-    ]
+    type_cols = [c for c in schema if c["column_name"].endswith("_type")]
     if not type_cols:
         return []
 
-    engine = create_engine(
-        db_url,
-        pool_pre_ping=True,
-        execution_options={"isolation_level": "AUTOCOMMIT"},
-    )
-    try:
-        with engine.connect() as conn:
-            results: list[dict] = []
-            for tc in type_cols:
-                cn = tc["column_name"]
-                qcn = quote_ident(cn, db_url)
-                is_pg = is_postgres_url(db_url)
-                if is_pg:
-                    sql_snippet = f"encode({qcn}, 'hex')"
-                else:
-                    sql_snippet = f"LOWER(CONVERT(VARCHAR(MAX), {qcn}, 2))"
-                raw = conn.execute(
+    dbname = get_db_name(db_url)
+    is_pg = is_postgres_url(db_url)
+
+    async def _sample_one(tc: dict) -> dict | None:
+        cn = tc["column_name"]
+        qcn = quote_ident(cn, db_url)
+        if is_pg:
+            sql_snippet = f"encode({qcn}, 'hex')"
+        else:
+            sql_snippet = f"LOWER(CONVERT(VARCHAR(MAX), {qcn}, 2))"
+        async with async_session_scope(dbname) as session:
+            raw = (
+                await session.execute(
                     text(
                         f"SELECT DISTINCT {sql_snippet} AS h"
                         f" FROM {quote_ident(table_name, db_url)}"
                         f" WHERE {qcn} IS NOT NULL AND length({qcn}) > 0"
                         f" LIMIT 5"
                     ),
-                ).fetchall()
-                values: list[str] = []
-                for row in raw:
-                    if row[0]:
-                        val = row[0]
-                        if isinstance(val, str):
-                            values.append(val)
-                decoded = []
-                for v in values:
-                    try:
-                        b = int(v, 16)
-                        decoded.append({
-                            "hex": f"0x{v}",
-                            "meaning": TYPE_DISCRIMINATOR_MAP.get(
-                                b, f"Unknown type 0x{b:02X}"
-                            ),
-                        })
-                    except ValueError:
-                        decoded.append({"hex": v, "meaning": "unknown"})
-                results.append({
-                    "column": cn,
-                    "values": decoded,
-                })
-            return results
-    finally:
-        engine.dispose()
+                )
+            ).fetchall()
+        values: list[str] = []
+        for row in raw:
+            if row[0]:
+                val = row[0]
+                if isinstance(val, str):
+                    values.append(val)
+        decoded = []
+        for v in values:
+            try:
+                b = int(v, 16)
+                decoded.append(
+                    {
+                        "hex": f"0x{v}",
+                        "meaning": TYPE_DISCRIMINATOR_MAP.get(b, f"Unknown type 0x{b:02X}"),
+                    }
+                )
+            except ValueError:
+                decoded.append({"hex": v, "meaning": "unknown"})
+        return {"column": cn, "values": decoded}
+
+    results: list[dict] = []
+    async with asyncio.TaskGroup() as tg:
+        tasks = [tg.create_task(_sample_one(tc)) for tc in type_cols]
+    for t in tasks:
+        r = t.result()
+        if r:
+            results.append(r)
+    return results
 
 
-def _resolve_uuid_against_tables(
+async def _resolve_uuid_against_tables(
     db_url: str,
     uuid_hex_std: str,
     ctx: dict,
 ) -> dict | None:
-    """Try to find *uuid_hex_std* in _IDRRef of any known table.
-
-    *uuid_hex_std* is a 32-char lowercase hex (standard format).
-    _IDRRef in 1C stores standard UUID (NOT mixed-endian), so we
-    search with both the standard hex and the mixed-endian variant
-    as a fallback.
-    """
+    """Try to find *uuid_hex_std* in _IDRRef of any known table (async + TaskGroup)."""
     candidates = {uuid_hex_std}
     with suppress(Exception):
         candidates.add(_uuid_to_1c_idrref_hex(uuid_hex_std))
     is_pg = is_postgres_url(db_url)
+    dbname = get_db_name(db_url)
+    arg = ",".join(f"'{h}'" for h in candidates)
 
-    engine = create_engine(
-        db_url,
-        pool_pre_ping=True,
-        execution_options={"isolation_level": "AUTOCOMMIT"},
-    )
-    try:
-        with engine.connect() as conn:
-            for obj in ctx["objects"]:
-                tn = obj.get("table_name")
-                if not tn:
-                    continue
-                try:
-                    qtn = quote_ident(tn, db_url)
-                    qidr = quote_ident("_idrref", db_url)
-                    if is_pg:
-                        arg = ",".join(f"'{h}'" for h in candidates)
-                        sql = text(
-                            f"SELECT 1 FROM {qtn}"
-                            f" WHERE encode({qidr}::bytea, 'hex') IN ({arg})"
-                            f" LIMIT 1"
-                        )
-                    else:
-                        arg = ",".join(f"'{h}'" for h in candidates)
-                        sql = text(
-                            f"SELECT 1 FROM {qtn}"
-                            f" WHERE LOWER(CONVERT(VARCHAR(32), {qidr}, 2))"
-                            f" IN ({arg}) LIMIT 1"
-                        )
-                    row = conn.execute(sql).fetchone()
-                    if row:
-                        return {
-                            "table_name": tn,
-                            "tech_name": obj.get("tech_name"),
-                            "category": obj.get("category"),
-                            "uuid": obj.get("uuid"),
-                            "display_names": obj.get("display_names"),
-                        }
-                except Exception:
-                    continue
-    finally:
-        engine.dispose()
+    async def _check_one(obj: dict) -> dict | None:
+        tn = obj.get("table_name")
+        if not tn:
+            return None
+        try:
+            qtn = quote_ident(tn, db_url)
+            qidr = quote_ident("_idrref", db_url)
+            if is_pg:
+                sql = text(
+                    f"SELECT 1 FROM {qtn} WHERE encode({qidr}::bytea, 'hex') IN ({arg}) LIMIT 1"
+                )
+            else:
+                sql = text(
+                    f"SELECT 1 FROM {qtn}"
+                    f" WHERE LOWER(CONVERT(VARCHAR(32), {qidr}, 2))"
+                    f" IN ({arg}) LIMIT 1"
+                )
+            async with async_session_scope(dbname) as session:
+                row = (await session.execute(sql)).fetchone()
+            if row:
+                return {
+                    "table_name": tn,
+                    "tech_name": obj.get("tech_name"),
+                    "category": obj.get("category"),
+                    "uuid": obj.get("uuid"),
+                    "display_names": obj.get("display_names"),
+                }
+        except Exception:
+            pass
+        return None
+
+    objects_with_tables = [o for o in ctx["objects"] if o.get("table_name")]
+    async with asyncio.TaskGroup() as tg:
+        tasks = [tg.create_task(_check_one(o)) for o in objects_with_tables]
+    for t in tasks:
+        r = t.result()
+        if r:
+            return r
     return None
 
 
-def _find_reverse_rtref(
+async def _find_reverse_rtref(
     db_url: str,
     table_suffix: int,
     ctx: dict,
 ) -> list[dict]:
-    """Find objects that have _rtref columns pointing to *table_suffix*."""
-    engine = create_engine(
-        db_url,
-        pool_pre_ping=True,
-        execution_options={"isolation_level": "AUTOCOMMIT"},
-    )
-    try:
-        with engine.connect() as conn:
-            is_pg = is_postgres_url(db_url)
-            suffix_bytes = struct.pack(">I", table_suffix)
-            suffix_hex = suffix_bytes.hex()
+    """Find objects that have _rtref columns pointing to *table_suffix* (async + TaskGroup)."""
+    is_pg = is_postgres_url(db_url)
+    dbname = get_db_name(db_url)
+    suffix_bytes = struct.pack(">I", table_suffix)
+    suffix_hex = suffix_bytes.hex()
 
-            results: list[dict] = []
-            for obj in ctx["objects"]:
-                tn = obj.get("table_name")
-                if not tn:
-                    continue
-                try:
-                    schema = _get_table_schema(db_url, tn)
-                    rtref_cols = [
-                        c["column_name"]
-                        for c in schema
-                        if re.match(r"_fld\d+rtref$", c["column_name"], re.IGNORECASE)
-                    ]
-                    if not rtref_cols:
-                        continue
+    async def _check_one(obj: dict) -> dict | None:
+        tn = obj.get("table_name")
+        if not tn:
+            return None
+        try:
+            schema = _get_table_schema(db_url, tn)
+            rtref_cols = [
+                c["column_name"]
+                for c in schema
+                if re.match(r"_fld\d+rtref$", c["column_name"], re.IGNORECASE)
+            ]
+            if not rtref_cols:
+                return None
 
-                    for rc in rtref_cols:
-                        qtn = quote_ident(tn, db_url)
-                        qrc = quote_ident(rc, db_url)
-                        if is_pg:
-                            sql_text = (
-                                f"SELECT 1 FROM {qtn}"
-                                f" WHERE encode({qrc}, 'hex') LIKE '{suffix_hex}%'"
-                                f" LIMIT 1"
-                            )
-                        else:
-                            sql_text = (
-                                f"SELECT TOP 1 1 FROM {qtn}"
-                                f" WHERE LOWER(CONVERT(VARCHAR(32), {qrc}, 2))"
-                                f" LIKE '{suffix_hex}%'"
-                            )
-                        row = conn.execute(text(sql_text)).fetchone()
-                        if row:
-                            results.append({
-                                "table_name": tn,
-                                "tech_name": obj.get("tech_name"),
-                                "uuid": obj.get("uuid"),
-                                "category": obj.get("category"),
-                                "column": rc,
-                            })
-                            break
-                except Exception:
-                    continue
-    finally:
-        engine.dispose()
+            for rc in rtref_cols:
+                qtn = quote_ident(tn, db_url)
+                qrc = quote_ident(rc, db_url)
+                if is_pg:
+                    sql_text = (
+                        f"SELECT 1 FROM {qtn}"
+                        f" WHERE encode({qrc}, 'hex') LIKE '{suffix_hex}%'"
+                        f" LIMIT 1"
+                    )
+                else:
+                    sql_text = (
+                        f"SELECT TOP 1 1 FROM {qtn}"
+                        f" WHERE LOWER(CONVERT(VARCHAR(32), {qrc}, 2))"
+                        f" LIKE '{suffix_hex}%'"
+                    )
+                async with async_session_scope(dbname) as session:
+                    row = (await session.execute(text(sql_text))).fetchone()
+                if row:
+                    return {
+                        "table_name": tn,
+                        "tech_name": obj.get("tech_name"),
+                        "uuid": obj.get("uuid"),
+                        "category": obj.get("category"),
+                        "column": rc,
+                    }
+        except Exception:
+            pass
+        return None
+
+    objects_with_tables = [o for o in ctx["objects"] if o.get("table_name")]
+    results: list[dict] = []
+    async with asyncio.TaskGroup() as tg:
+        tasks = [tg.create_task(_check_one(o)) for o in objects_with_tables]
+    for t in tasks:
+        r = t.result()
+        if r:
+            results.append(r)
     return results
 
 
-def _sample_rref_uuids(
+async def _sample_rref_uuids(
     db_url: str,
     table_name: str,
     field_names: list[str],
 ) -> list[dict]:
-    """Scan _rref columns, sample IDs, try to resolve target tables."""
+    """Scan _rref columns, sample IDs, try to resolve target tables (async + TaskGroup)."""
     schema_columns = _get_table_schema(db_url, table_name)
     rref_re = re.compile(r"_fld\d+rref$", re.IGNORECASE)
     rtref_re = re.compile(r"_fld\d+rtref$", re.IGNORECASE)
@@ -344,39 +340,32 @@ def _sample_rref_uuids(
     rref_cols = [
         c["column_name"]
         for c in schema_columns
-        if bool(rref_re.match(c["column_name"]))
-        and not bool(rtref_re.match(c["column_name"]))
+        if bool(rref_re.match(c["column_name"])) and not bool(rtref_re.match(c["column_name"]))
     ]
     if not rref_cols:
         return []
 
     ctx = build_llm_context(db_url)
-    engine = create_engine(
-        db_url,
-        pool_pre_ping=True,
-        execution_options={"isolation_level": "AUTOCOMMIT"},
-    )
-    try:
-        with engine.connect() as conn:
-            results: list[dict] = []
-            fld_positions = _compute_fld_positions(schema_columns)
-            for col_name in rref_cols:
-                pos = fld_positions.get(col_name, -1)
-                fn = field_names[pos] if pos >= 0 and pos < len(field_names) else col_name
+    is_pg = is_postgres_url(db_url)
+    dbname = get_db_name(db_url)
+    fld_positions = _compute_fld_positions(schema_columns)
 
-                is_pg = is_postgres_url(db_url)
-                qcol = quote_ident(col_name, db_url)
-                if is_pg:
-                    sql_snippet = f"encode({qcol}, 'hex')"
-                else:
-                    sql_snippet = f"LOWER(CONVERT(VARCHAR(MAX), {qcol}, 2))"
+    async def _sample_one(col_name: str) -> dict:
+        pos = fld_positions.get(col_name, -1)
+        fn = field_names[pos] if pos >= 0 and pos < len(field_names) else col_name
 
-                zero_check = (
-                    f" AND encode({qcol}, 'hex') != '00000000000000000000000000000000'"
-                    if is_pg
-                    else ""
-                )
-                raw = conn.execute(
+        qcol = quote_ident(col_name, db_url)
+        if is_pg:
+            sql_snippet = f"encode({qcol}, 'hex')"
+        else:
+            sql_snippet = f"LOWER(CONVERT(VARCHAR(MAX), {qcol}, 2))"
+
+        zero_check = (
+            f" AND encode({qcol}, 'hex') != '00000000000000000000000000000000'" if is_pg else ""
+        )
+        async with async_session_scope(dbname) as session:
+            raw = (
+                await session.execute(
                     text(
                         f"SELECT DISTINCT {sql_snippet} AS h"
                         f" FROM {quote_ident(table_name, db_url)}"
@@ -385,111 +374,103 @@ def _sample_rref_uuids(
                         f"{zero_check}"
                         f" LIMIT 4"
                     ),
-                ).fetchall()
+                )
+            ).fetchall()
 
-                sample_uuids: list[str] = []
-                for row in raw:
-                    if row[0] and isinstance(row[0], str):
-                        h = row[0].strip().lower()
-                        if len(h) == 32:
-                            sample_uuids.append(h)
+        sample_uuids: list[str] = []
+        for row in raw:
+            if row[0] and isinstance(row[0], str):
+                h = row[0].strip().lower()
+                if len(h) == 32:
+                    sample_uuids.append(h)
 
-                target = None
-                for su in sample_uuids[:1]:
-                    target = _resolve_uuid_against_tables(db_url, su, ctx)
-                    if target:
-                        break
+        target = None
+        for su in sample_uuids[:1]:
+            target = await _resolve_uuid_against_tables(db_url, su, ctx)
+            if target:
+                break
 
-                results.append({
-                    "column": col_name,
-                    "field_name": fn,
-                    "sample_uuids": sample_uuids,
-                    "target": target,
-                })
-            return results
-    finally:
-        engine.dispose()
+        return {
+            "column": col_name,
+            "field_name": fn,
+            "sample_uuids": sample_uuids,
+            "target": target,
+        }
+
+    results: list[dict] = []
+    async with asyncio.TaskGroup() as tg:
+        tasks = [tg.create_task(_sample_one(cn)) for cn in rref_cols]
+    for t in tasks:
+        results.append(t.result())
+    return results
 
 
-def _sample_rtref_targets(
+async def _sample_rtref_targets(
     db_url: str,
     table_name: str,
     ctx: dict,
     field_names: list[str],
     sample_limit: int = 5,
 ) -> list[dict]:
-    """Scan _rtref columns and discover target tables from first 4 bytes."""
+    """Scan _rtref columns and discover target tables from first 4 bytes (async)."""
     schema_columns = _get_table_schema(db_url, table_name)
     rtref_re = re.compile(r"_fld\d+rtref$", re.IGNORECASE)
 
     rtref_col_names = [
-        c["column_name"]
-        for c in schema_columns
-        if bool(rtref_re.match(c["column_name"]))
+        c["column_name"] for c in schema_columns if bool(rtref_re.match(c["column_name"]))
     ]
     if not rtref_col_names:
         return []
 
-    engine = create_engine(
-        db_url,
-        pool_pre_ping=True,
-        execution_options={"isolation_level": "AUTOCOMMIT"},
+    is_pg = is_postgres_url(db_url)
+    dbname = get_db_name(db_url)
+    cols_sql = ", ".join(
+        f"encode({quote_ident(c, db_url)}, 'hex') AS {quote_ident(c, db_url)}"
+        if is_pg
+        else quote_ident(c, db_url)
+        for c in rtref_col_names
     )
-    try:
-        with engine.connect() as conn:
-            is_pg = is_postgres_url(db_url)
-            cols_sql = ", ".join(
-                f"encode({quote_ident(c, db_url)}, 'hex') AS {quote_ident(c, db_url)}"
-                if is_pg else quote_ident(c, db_url)
-                for c in rtref_col_names
-            )
-            raw = conn.execute(
-                text(
-                    f"SELECT {cols_sql}"
-                    f" FROM {quote_ident(table_name, db_url)}"
-                    f" LIMIT :lim"
-                ),
-                {"lim": sample_limit},
-            )
+    async with async_session_scope(dbname) as session:
+        raw = await session.execute(
+            text(f"SELECT {cols_sql} FROM {quote_ident(table_name, db_url)} LIMIT :lim"),
+            {"lim": sample_limit},
+        )
+        rows = raw.fetchall()
 
-            refs: dict[tuple[str, int], int] = {}
-            for row in raw.fetchall():
-                for col_name, val in zip(rtref_col_names, row, strict=False):
-                    if val is None:
-                        continue
-                    try:
-                        raw_bytes = (
-                            bytes.fromhex(val) if isinstance(val, str) else val
-                        )
-                        if len(raw_bytes) >= 4:
-                            suffix = struct.unpack(">I", raw_bytes[:4])[0]
-                            if suffix != 0:
-                                key = (col_name, suffix)
-                                refs[key] = refs.get(key, 0) + 1
-                    except (ValueError, struct.error):
-                        continue
+    refs: dict[tuple[str, int], int] = {}
+    for row in rows:
+        for col_name, val in zip(rtref_col_names, row, strict=False):
+            if val is None:
+                continue
+            try:
+                raw_bytes = bytes.fromhex(val) if isinstance(val, str) else val
+                if len(raw_bytes) >= 4:
+                    suffix = struct.unpack(">I", raw_bytes[:4])[0]
+                    if suffix != 0:
+                        key = (col_name, suffix)
+                        refs[key] = refs.get(key, 0) + 1
+            except (ValueError, struct.error):
+                continue
 
-            fld_positions = _compute_fld_positions(schema_columns)
-            results: list[dict] = []
-            for (col_name, suffix), count in sorted(
-                refs.items(), key=lambda x: -x[1]
-            ):
-                pos = fld_positions.get(col_name, -1)
-                fn = field_names[pos] if pos >= 0 and pos < len(field_names) else col_name
-                target = _resolve_from_table_suffix(suffix, ctx)
-                results.append({
-                    "column": col_name,
-                    "field_name": fn,
-                    "table_suffix": suffix,
-                    "sample_count": count,
-                    "target": target,
-                })
-            return results
-    finally:
-        engine.dispose()
+    fld_positions = _compute_fld_positions(schema_columns)
+    results: list[dict] = []
+    for (col_name, suffix), count in sorted(refs.items(), key=lambda x: -x[1]):
+        pos = fld_positions.get(col_name, -1)
+        fn = field_names[pos] if pos >= 0 and pos < len(field_names) else col_name
+        target = _resolve_from_table_suffix(suffix, ctx)
+        results.append(
+            {
+                "column": col_name,
+                "field_name": fn,
+                "table_suffix": suffix,
+                "sample_count": count,
+                "target": target,
+            }
+        )
+    return results
 
 
-def build_graph(db_url: str, uuid_str: str) -> dict:
+async def build_graph(db_url: str, uuid_str: str) -> dict:
     """Build relationship graph for the metadata object identified by *uuid_str*.
 
     Resolves owners, parents, reference targets, type discriminators,
@@ -529,195 +510,214 @@ def build_graph(db_url: str, uuid_str: str) -> dict:
     if not table_name:
         return result
 
-    engine = create_engine(
-        db_url,
-        pool_pre_ping=True,
-        execution_options={"isolation_level": "AUTOCOMMIT"},
-    )
+    dbname = get_db_name(db_url)
+    is_pg = is_postgres_url(db_url)
+
+    # 1. Extract blob field names
+    field_names: list[str] = []
     try:
-        # 1. Extract blob field names
-        field_names: list[str] = []
-        try:
-            blobs = fetch_blob(db_url, uuid=obj_uuid, limit=1)
-            if blobs and blobs[0].get("content"):
-                field_names = _extract_field_names(blobs[0]["content"])
-        except Exception:
-            pass
-        result["field_names"] = field_names
+        blobs = await extract_metadata_blobs(db_url, uuid=obj_uuid, limit=1, raw=True)
+        if blobs and blobs[0].get("content"):
+            field_names = _extract_field_names(blobs[0]["content"])
+    except Exception:
+        pass
 
-        # 2. Reference columns with metadata names
-        ref_cols = _build_reference_columns(
-            db_url, table_name, obj_uuid, field_names,
-        )
-        result["references"] = ref_cols
+    # 2. Reference columns with metadata names
+    ref_cols = await _build_reference_columns(
+        db_url,
+        table_name,
+        obj_uuid,
+        field_names,
+    )
+    result["references"] = ref_cols
 
-        # 3. _owneridrref — resolve owner
-        if _has_owneridrref(db_url, table_name):
-            with engine.connect() as conn:
-                is_pg = is_postgres_url(db_url)
-                qtn = quote_ident(table_name, db_url)
-                qown = quote_ident("_owneridrref", db_url) if is_pg else "_owneridrref"
-                if is_pg:
-                    owner_row = conn.execute(
+    # 3. _owneridrref — resolve owner (async + TaskGroup)
+    result["owner"] = None
+    if _has_owneridrref(db_url, table_name):
+        async with async_session_scope(dbname) as session:
+            qtn = quote_ident(table_name, db_url)
+            qown = quote_ident("_owneridrref", db_url) if is_pg else "_owneridrref"
+            if is_pg:
+                owner_row = (
+                    await session.execute(
                         text(
                             f"SELECT DISTINCT encode({qown}, 'hex')"
                             f" FROM {qtn}"
                             f" WHERE {qown} IS NOT NULL"
                             f" LIMIT 1"
                         ),
-                    ).fetchone()
-                else:
-                    owner_row = conn.execute(
+                    )
+                ).fetchone()
+            else:
+                owner_row = (
+                    await session.execute(
                         text(
-                            f"SELECT DISTINCT"
-                            f" LOWER(CONVERT(VARCHAR(32), {qown}, 2))"
+                            f"SELECT DISTINCT LOWER(CONVERT(VARCHAR(32), {qown}, 2))"
                             f" FROM {qtn}"
                             f" WHERE {qown} IS NOT NULL"
                             f" LIMIT 1"
                         ),
-                    ).fetchone()
+                    )
+                ).fetchone()
 
-                if owner_row and owner_row[0]:
-                    owner_hex = owner_row[0].strip()
-                    owner_candidates = {owner_hex}
-                    owner_candidates.add(_uuid_to_1c_idrref_hex(owner_hex))
+        if owner_row and owner_row[0]:
+            owner_hex = owner_row[0].strip()
+            owner_candidates = {owner_hex}
+            with suppress(Exception):
+                owner_candidates.add(_uuid_to_1c_idrref_hex(owner_hex))
+            arg = ",".join(f"'{h}'" for h in owner_candidates)
 
-                    owner_target = None
-                    for tobj in ctx["objects"]:
-                        ttn = tobj.get("table_name")
-                        if not ttn:
-                            continue
-                        try:
-                            arg = ",".join(f"'{h}'" for h in owner_candidates)
-                            qttn = quote_ident(ttn, db_url)
-                            qidr = quote_ident("_idrref", db_url)
-                            trow = conn.execute(
+            async def _find_owner(obj: dict) -> dict | None:
+                tn = obj.get("table_name")
+                if not tn:
+                    return None
+                try:
+                    async with async_session_scope(dbname) as s:
+                        row = (
+                            await s.execute(
                                 text(
-                                    f"SELECT 1 FROM {qttn}"
-                                    f" WHERE encode({qidr}::bytea, 'hex') IN ({arg})"
-                                    f" LIMIT 1"
+                                    f"SELECT 1 FROM {quote_ident(tn, db_url)}"
+                                    f" WHERE encode({quote_ident('_idrref', db_url)}::bytea, 'hex')"
+                                    f" IN ({arg}) LIMIT 1"
                                 ),
-                            ).fetchone()
-                            if trow:
-                                owner_target = {
-                                    "table_name": ttn,
-                                    "tech_name": tobj.get("tech_name"),
-                                    "category": tobj.get("category"),
-                                    "uuid": tobj.get("uuid"),
-                                    "display_names": tobj.get("display_names"),
-                                }
-                                break
-                        except Exception:
-                            continue
-                    result["owner"] = owner_target
-                else:
-                    result["owner"] = None
-        else:
-            result["owner"] = None
+                            )
+                        ).fetchone()
+                    if row:
+                        return {
+                            "table_name": tn,
+                            "tech_name": obj.get("tech_name"),
+                            "category": obj.get("category"),
+                            "uuid": obj.get("uuid"),
+                            "display_names": obj.get("display_names"),
+                        }
+                except Exception:
+                    pass
+                return None
 
-        # 4. _parentidrref — resolve parent
-        if _has_parentidrref(db_url, table_name):
-            with engine.connect() as conn:
-                is_pg = is_postgres_url(db_url)
-                qtn = quote_ident(table_name, db_url)
-                qpar = quote_ident("_parentidrref", db_url) if is_pg else "_parentidrref"
-                if is_pg:
-                    parent_row = conn.execute(
+            owner_target = None
+            objects_with_tables = [o for o in ctx["objects"] if o.get("table_name")]
+            async with asyncio.TaskGroup() as tg:
+                tasks = [tg.create_task(_find_owner(o)) for o in objects_with_tables]
+            for t in tasks:
+                r = t.result()
+                if r:
+                    owner_target = r
+                    break
+            result["owner"] = owner_target
+
+    # 4. _parentidrref — resolve parent (async + TaskGroup)
+    result["parent"] = None
+    if _has_parentidrref(db_url, table_name):
+        async with async_session_scope(dbname) as session:
+            qtn = quote_ident(table_name, db_url)
+            qpar = quote_ident("_parentidrref", db_url) if is_pg else "_parentidrref"
+            if is_pg:
+                parent_row = (
+                    await session.execute(
                         text(
                             f"SELECT DISTINCT encode({qpar}, 'hex')"
                             f" FROM {qtn}"
                             f" WHERE {qpar} IS NOT NULL"
                             f" LIMIT 1"
                         ),
-                    ).fetchone()
-                else:
-                    parent_row = conn.execute(
+                    )
+                ).fetchone()
+            else:
+                parent_row = (
+                    await session.execute(
                         text(
-                            f"SELECT DISTINCT"
-                            f" LOWER(CONVERT(VARCHAR(32), {qpar}, 2))"
+                            f"SELECT DISTINCT LOWER(CONVERT(VARCHAR(32), {qpar}, 2))"
                             f" FROM {qtn}"
                             f" WHERE {qpar} IS NOT NULL"
                             f" LIMIT 1"
                         ),
-                    ).fetchone()
+                    )
+                ).fetchone()
 
-                if parent_row and parent_row[0]:
-                    parent_hex = parent_row[0].strip()
-                    parent_candidates = {parent_hex}
-                    parent_candidates.add(_uuid_to_1c_idrref_hex(parent_hex))
+        if parent_row and parent_row[0]:
+            parent_hex = parent_row[0].strip()
+            parent_candidates = {parent_hex}
+            with suppress(Exception):
+                parent_candidates.add(_uuid_to_1c_idrref_hex(parent_hex))
+            arg = ",".join(f"'{h}'" for h in parent_candidates)
 
-                    parent_target = None
-                    for tobj in ctx["objects"]:
-                        ttn = tobj.get("table_name")
-                        if not ttn:
-                            continue
-                        try:
-                            arg = ",".join(f"'{h}'" for h in parent_candidates)
-                            qttn = quote_ident(ttn, db_url)
-                            qidr = quote_ident("_idrref", db_url)
-                            trow = conn.execute(
+            async def _find_parent(obj: dict) -> dict | None:
+                tn = obj.get("table_name")
+                if not tn:
+                    return None
+                try:
+                    async with async_session_scope(dbname) as s:
+                        row = (
+                            await s.execute(
                                 text(
-                                    f"SELECT 1 FROM {qttn}"
-                                    f" WHERE encode({qidr}::bytea, 'hex') IN ({arg})"
-                                    f" LIMIT 1"
+                                    f"SELECT 1 FROM {quote_ident(tn, db_url)}"
+                                    f" WHERE encode({quote_ident('_idrref', db_url)}::bytea, 'hex')"
+                                    f" IN ({arg}) LIMIT 1"
                                 ),
-                            ).fetchone()
-                            if trow:
-                                parent_target = {
-                                    "table_name": ttn,
-                                    "tech_name": tobj.get("tech_name"),
-                                    "category": tobj.get("category"),
-                                    "uuid": tobj.get("uuid"),
-                                    "display_names": tobj.get("display_names"),
-                                }
-                                break
-                        except Exception:
-                            continue
-                    result["parent"] = parent_target
-                else:
-                    result["parent"] = None
-        else:
-            result["parent"] = None
+                            )
+                        ).fetchone()
+                    if row:
+                        return {
+                            "table_name": tn,
+                            "tech_name": obj.get("tech_name"),
+                            "category": obj.get("category"),
+                            "uuid": obj.get("uuid"),
+                            "display_names": obj.get("display_names"),
+                        }
+                except Exception:
+                    pass
+                return None
 
-        # 5. RTRef targets (typed references) — forward
-        rtref_results = _sample_rtref_targets(
-            db_url, table_name, ctx, field_names,
-        )
-        if rtref_results:
-            result["rtref_targets"] = rtref_results
+            parent_target = None
+            objects_with_tables = [o for o in ctx["objects"] if o.get("table_name")]
+            async with asyncio.TaskGroup() as tg:
+                tasks = [tg.create_task(_find_parent(o)) for o in objects_with_tables]
+            for t in tasks:
+                r = t.result()
+                if r:
+                    parent_target = r
+                    break
+            result["parent"] = parent_target
 
-        # 6. RRef UUID resolution
-        rref_results = _sample_rref_uuids(db_url, table_name, field_names)
-        if rref_results:
-            result["rref_targets"] = rref_results
+    # 5. RTRef targets (typed references) — forward
+    rtref_results = await _sample_rtref_targets(
+        db_url,
+        table_name,
+        ctx,
+        field_names,
+    )
+    if rtref_results:
+        result["rtref_targets"] = rtref_results
 
-        # 7. Type discriminators
-        type_info = _find_type_columns(db_url, table_name)
-        if type_info:
-            result["type_discriminators"] = type_info
+    # 6. RRef UUID resolution
+    rref_results = await _sample_rref_uuids(db_url, table_name, field_names)
+    if rref_results:
+        result["rref_targets"] = rref_results
 
-        # 8. Reverse _rtref references
-        table_suffix = None
-        m = re.search(r"_(\d+)$", table_name)
-        if m:
-            table_suffix = int(m.group(1))
-            reverse_refs = _find_reverse_rtref(db_url, table_suffix, ctx)
-            if reverse_refs:
-                result["reverse_rtref"] = reverse_refs
+    # 7. Type discriminators
+    type_info = await _find_type_columns(db_url, table_name)
+    if type_info:
+        result["type_discriminators"] = type_info
 
-    finally:
-        engine.dispose()
+    # 8. Reverse _rtref references
+    table_suffix = None
+    m = re.search(r"_(\d+)$", table_name)
+    if m:
+        table_suffix = int(m.group(1))
+        reverse_refs = await _find_reverse_rtref(db_url, table_suffix, ctx)
+        if reverse_refs:
+            result["reverse_rtref"] = reverse_refs
 
     return result
 
 
-def graph_mermaid(db_url: str, uuid_str: str) -> str:
+async def graph_mermaid(db_url: str, uuid_str: str) -> str:
     """Generate a Mermaid classDiagram for the object's relationship graph.
 
     Each connected object (owner, parent, reference target) is a class.
     Relationships show human-readable field names (not _fld{N}rref).
     """
-    info = build_graph(db_url, uuid_str)
+    info = await build_graph(db_url, uuid_str)
     if "error" in info:
         return f"ERROR: {info['error']}"
 
@@ -811,9 +811,9 @@ def graph_mermaid(db_url: str, uuid_str: str) -> str:
     return "\n".join(lines)
 
 
-def graph_text(db_url: str, uuid_str: str) -> str:
+async def graph_text(db_url: str, uuid_str: str) -> str:
     """Human-readable text representation of the relationship graph."""
-    info = build_graph(db_url, uuid_str)
+    info = await build_graph(db_url, uuid_str)
 
     if "error" in info:
         return f"ERROR: {info['error']}"
@@ -879,13 +879,9 @@ def graph_text(db_url: str, uuid_str: str) -> str:
                     if rr["column"] == col:
                         tgt = rr.get("target")
                         if tgt:
-                            lines.append(
-                                f"         → {tgt['tech_name']} ({tgt['table_name']})"
-                            )
+                            lines.append(f"         → {tgt['tech_name']} ({tgt['table_name']})")
                         elif rr.get("sample_uuids"):
-                            lines.append(
-                                f"         → UUID: {rr['sample_uuids'][0]}"
-                            )
+                            lines.append(f"         → UUID: {rr['sample_uuids'][0]}")
                         break
 
             # Show resolved rtref target
@@ -894,13 +890,9 @@ def graph_text(db_url: str, uuid_str: str) -> str:
                     if rr["column"] == col:
                         tgt = rr.get("target")
                         if tgt:
-                            lines.append(
-                                f"         → {tgt['tech_name']} ({tgt['table_name']})"
-                            )
+                            lines.append(f"         → {tgt['tech_name']} ({tgt['table_name']})")
                         else:
-                            lines.append(
-                                f"         → table suffix #{rr.get('table_suffix', '?')}"
-                            )
+                            lines.append(f"         → table suffix #{rr.get('table_suffix', '?')}")
                         break
 
     # Type discriminators
@@ -912,9 +904,7 @@ def graph_text(db_url: str, uuid_str: str) -> str:
             col = td["column"]
             vals = td.get("values", [])
             if vals:
-                meanings = ", ".join(
-                    v["meaning"] or v["hex"] for v in vals
-                )
+                meanings = ", ".join(v["meaning"] or v["hex"] for v in vals)
                 lines.append(f"  {col} → {meanings}")
 
     # Reverse references
@@ -923,34 +913,43 @@ def graph_text(db_url: str, uuid_str: str) -> str:
         lines.append("")
         lines.append("── Обратные ссылки (на этот объект) ──")
         for rv in reverse:
-            lines.append(
-                f"  {rv['tech_name']} → {rv['column']} ({rv['table_name']})"
-            )
+            lines.append(f"  {rv['tech_name']} → {rv['column']} ({rv['table_name']})")
 
     return "\n".join(lines)
 
 
-def build_global_graph(db_url: str) -> list[dict]:
-    """Build relationship graph for ALL metadata objects with tables."""
+async def build_global_graph(db_url: str) -> list[dict]:
+    """Build relationship graph for ALL metadata objects with tables.
+
+    Uses TaskGroup to parallelise all ``build_graph`` calls.
+    """
     ctx = build_llm_context(db_url)
 
-    results: list[dict] = []
-    for obj in ctx["objects"]:
-        if not obj.get("table_name"):
-            continue
+    objects_with_tables = [o for o in ctx["objects"] if o.get("table_name")]
+
+    async def _build_one(uuid: str) -> dict | None:
         try:
-            g = build_graph(db_url, obj["uuid"])
+            g = await build_graph(db_url, uuid)
             if "error" not in g:
-                results.append(g)
+                return g
         except Exception:
             pass
+        return None
+
+    results: list[dict] = []
+    async with asyncio.TaskGroup() as tg:
+        tasks = [tg.create_task(_build_one(o["uuid"])) for o in objects_with_tables]
+    for t in tasks:
+        r = t.result()
+        if r:
+            results.append(r)
 
     return results
 
 
-def graph_all_text(db_url: str) -> str:
+async def graph_all_text(db_url: str) -> str:
     """Human-readable text for the global graph."""
-    graphs = build_global_graph(db_url)
+    graphs = await build_global_graph(db_url)
     if not graphs:
         return "(объекты с таблицами не найдены)"
 
@@ -985,9 +984,9 @@ def graph_all_text(db_url: str) -> str:
     return "\n".join(lines)
 
 
-def graph_all_mermaid(db_url: str) -> str:
+async def graph_all_mermaid(db_url: str) -> str:
     """Mermaid classDiagram for ALL objects and their relationships."""
-    graphs = build_global_graph(db_url)
+    graphs = await build_global_graph(db_url)
     if not graphs:
         return "```mermaid\nclassDiagram\n    class Error {\n        no objects\n    }\n```"
 

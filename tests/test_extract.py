@@ -1,16 +1,18 @@
 """Tests for py1cv8 core modules (decompress, decode, metadata, bsl, resolve)."""
+
 from __future__ import annotations
 
 import zlib
 
+from py1cv8.blob.decompress import decode_blob_chunk, try_decompress
 from py1cv8.bsl import extract_name_from_code, has_bsl_keywords
-from py1cv8.compress import decode_blob_chunk, try_decompress
 from py1cv8.metadata_binary import (
     extract_type_from_configcas_blob,
     parse_metadata_blob,
 )
 
 # ── try_decompress ──────────────────────────────────────────────────────────
+
 
 def test_try_decompress_zlib_returns_data():
     original = b"Hello 1C World!"
@@ -30,6 +32,7 @@ def test_try_decompress_short_data():
 
 # ── has_bsl_keywords ──────────────────────────────────────────────────────
 
+
 def test_has_bsl_keywords_found():
     assert has_bsl_keywords("Процедура Тест()") is True
     assert has_bsl_keywords("Функция Вернуть()") is True
@@ -42,6 +45,7 @@ def test_has_bsl_keywords_not_found():
 
 
 # ── decode_blob_chunk ───────────────────────────────────────────────────────
+
 
 def test_decode_blob_chunk_utf8():
     chunk = "Процедура Тест()".encode()
@@ -63,8 +67,9 @@ def test_decode_blob_chunk_too_short():
 
 # ── parse_metadata_blob ─────────────────────────────────────────────────────
 
+
 def test_parse_metadata_blob_dataprocessor():
-    txt = '''{1,
+    txt = """{1,
 {4,
 {3,
 {1,0,022c01a4-650e-44a0-a921-b5455e802e4c},"ирИсполняемыйЗапрос",
@@ -79,7 +84,7 @@ def test_parse_metadata_blob_dataprocessor():
 {0,0},
 {0,0},
 {0,0},0,0,5,0,0,5,0,
-{1,1},""}'''
+{1,1},""}"""
     result = parse_metadata_blob(txt)
     assert result is not None
     assert result["type_num"] == 4
@@ -90,7 +95,7 @@ def test_parse_metadata_blob_dataprocessor():
 
 def test_parse_metadata_blob_commontemplate():
     """CommonTemplate (type=12) with OPI name ending in digits."""
-    txt = '''{1,
+    txt = """{1,
 {12,
 {3,
 {1,0,496e68cd-c70d-4c15-aa9e-c2aad28abf8a},"OPI_Bitrix24",
@@ -104,7 +109,7 @@ def test_parse_metadata_blob_commontemplate():
 {0,0},
 {0,0},
 {0,0},0,0,5,0,0,5,0,
-{1,1},""}'''
+{1,1},""}"""
     result = parse_metadata_blob(txt)
     assert result is not None
     assert result["type_num"] == 12
@@ -128,22 +133,22 @@ def test_parse_metadata_blob_role():
 
 
 def test_parse_metadata_blob_generic_name_filtered():
-    txt = '''{1,
+    txt = """{1,
 {2,4,
 {3,
 {1,0,uuid-test-0000-0000-0000-000000000000},"ОбщийМодуль1",
 {3,"ru","Общий модуль 1"},"",0,0,""}
-},"",0,0,00000000-0000-0000-0000-000000000000,0},""}'''
+},"",0,0,00000000-0000-0000-0000-000000000000,0},""}"""
     result = parse_metadata_blob(txt)
     assert result is None
 
 
 def test_parse_metadata_blob_type57():
-    txt = '''{1,
+    txt = """{1,
 {57,
 {3,
 {1,0,cd070a4a-6274-4576-8cc1-f17696a76834},"ирАлгоритмы",
-{3,"ru","Алгоритмы (ИР)"},"",0,0,00000000-0000-0000-0000-000000000000,0},1,1,""}'''
+{3,"ru","Алгоритмы (ИР)"},"",0,0,00000000-0000-0000-0000-000000000000,0},1,1,""}"""
     result = parse_metadata_blob(txt)
     assert result is not None
     assert result["type_num"] == 57
@@ -151,6 +156,7 @@ def test_parse_metadata_blob_type57():
 
 
 # ── extract_name_from_code ──────────────────────────────────────────────────
+
 
 def test_extract_name_from_code_func_name():
     code = "Процедура МояФункция(Параметр) Экспорт\n\t// code\nКонецПроцедуры"
@@ -186,22 +192,23 @@ def test_extract_name_from_code_quoted_match():
 
 # ── extract_type_from_configcas_blob ────────────────────────────────────────
 
+
 def test_extract_type_moxcel():
     dec = b"MOXCEL\x00\x08\x00\x01\x00\x0c\x00"
-    dec += b"{12,1,\"test\"}"
+    dec += b'{12,1,"test"}'
     result = extract_type_from_configcas_blob(dec)
     assert result == 12
 
 
 def test_extract_type_moxcel_type8():
     dec = b"MOXCEL\x00\x08\x00\x01\x00\x08\x00"
-    dec += b"{8,1,\"test\"}"
+    dec += b'{8,1,"test"}'
     result = extract_type_from_configcas_blob(dec)
     assert result == 8
 
 
 def test_extract_type_braces_pattern():
-    dec = b"{1,\n{4,\n{3,\n{1,0,uuid},\"TestName\""
+    dec = b'{1,\n{4,\n{3,\n{1,0,uuid},"TestName"'
     result = extract_type_from_configcas_blob(dec)
     assert result == 4
 
@@ -246,9 +253,7 @@ def test_uuid_to_1c_idrref_roundtrip() -> None:
     # std uuid = 5000289c-66b6-fadf-11f1-4e880e761abe
     std_hex = _normalise_uuid("5000289c-66b6-fadf-11f1-4e880e761abe")
     idrref = _uuid_to_1c_idrref_hex(std_hex)
-    assert idrref == db_raw_hex, (
-        f"Expected {db_raw_hex}, got {idrref}"
-    )
+    assert idrref == db_raw_hex, f"Expected {db_raw_hex}, got {idrref}"
 
     # Second DB sample
     #   raw bytes: 9c 27 00 50 | b6 66 | df fa | 11 f1 44 09 0b 2c 44 a7

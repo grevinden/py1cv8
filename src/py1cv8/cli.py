@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from typing import Annotated
-from urllib.parse import urlparse
 
 import typer
 
 from py1cv8.agent_prompt import AGENT_PROMPT
 from py1cv8.db import normalise_db_url
 from py1cv8.output import print_json, print_text
+from py1cv8.sql.orm import ConfigTable
 
 app = typer.Typer(
     name="py1cv8",
@@ -22,18 +22,6 @@ app = typer.Typer(
 def agent() -> None:
     """Print LLM agent prompt — instructions for autonomous 1C analysis."""
     print_text(AGENT_PROMPT)
-
-
-def _parse_db_url(db_url: str) -> tuple[str, str]:
-    # Normalise: postgres:// → postgresql:// (SQLAlchemy deprecation)
-    normalised = db_url.replace("postgres://", "postgresql://", 1)
-    parsed = urlparse(normalised)
-    path = parsed.path.strip("/")
-    if not path:
-        raise ValueError(f"Database URL must include a path (database name): {db_url}")
-    dbname = path.rsplit("/", 1)[-1]
-    base_url = parsed._replace(path="").geturl()
-    return base_url, dbname
 
 
 @app.command()
@@ -101,7 +89,7 @@ def sql(
 
 
 @app.command()
-def blob(
+async def blob(
     db_url: Annotated[
         str,
         typer.Argument(
@@ -111,7 +99,7 @@ def blob(
         ),
     ],
     table: Annotated[
-        str,
+        ConfigTable,
         typer.Option("--table", "-t", help="Source table: config or configcas"),
     ] = "config",
     uuid: Annotated[
@@ -130,6 +118,14 @@ def blob(
         int,
         typer.Option("--limit", "-l", help="Max rows"),
     ] = 20,
+    raw_content: Annotated[
+        bool,
+        typer.Option(
+            "--raw",
+            "-r",
+            help="Include decompressed blob content (adds ~50KB per row)",
+        ),
+    ] = False,
     pretty: Annotated[
         bool,
         typer.Option("--pretty", "-p", help="Pretty-print JSON"),
@@ -137,17 +133,22 @@ def blob(
 ) -> None:
     """Fetch and decompress config blobs — inspect raw metadata format."""
     db_url = normalise_db_url(db_url)
-    from py1cv8.blob_fetch import fetch_blob
+    from py1cv8.blob_fetch import BLOB_FORMAT_DESCRIPTION, extract_metadata_blobs
 
-    rows = fetch_blob(
+    rows = await extract_metadata_blobs(
         db_url=db_url,
         table=table,
         filename=filename,
         partno=partno,
         uuid=uuid,
         limit=limit,
+        raw=raw_content,
     )
-    print_json(rows, pretty=pretty)
+    output: dict | list[dict] = {
+        "blobs": rows,
+        "format_description": BLOB_FORMAT_DESCRIPTION if raw_content else None,
+    }
+    print_json(output, pretty=pretty)
 
 
 @app.command()
@@ -244,7 +245,7 @@ def resolve(
 
 
 @app.command()
-def describe(
+async def describe(
     db_url: Annotated[
         str,
         typer.Argument(
@@ -274,8 +275,12 @@ def describe(
     db_url = normalise_db_url(db_url)
     from py1cv8.describe_object import describe_text
 
-    text = describe_text(
-        db_url, uuid, sample_limit=sample_rows, resolve_refs=resolve_refs, no_blob=no_blob,
+    text = await describe_text(
+        db_url,
+        uuid,
+        sample_limit=sample_rows,
+        resolve_refs=resolve_refs,
+        no_blob=no_blob,
     )
     print_text(text)
 
@@ -341,7 +346,7 @@ def tables(
 
 
 @app.command()
-def graph(
+async def graph(
     db_url: Annotated[
         str,
         typer.Argument(
@@ -386,18 +391,90 @@ def graph(
 
     if all_flag:
         if mermaid_output:
-            print_text(graph_all_mermaid(db_url))
+            print_text(await graph_all_mermaid(db_url))
         elif json_output:
             from py1cv8.graph import build_global_graph
-            print_json(build_global_graph(db_url), pretty=pretty)
+
+            print_json(await build_global_graph(db_url), pretty=pretty)
         else:
-            print_text(graph_all_text(db_url))
+            print_text(await graph_all_text(db_url))
     elif not uuid:
         typer.echo("Error: provide a UUID or use --all", err=True)
         raise typer.Exit(1)
     elif mermaid_output:
-        print_text(graph_mermaid(db_url, uuid))
+        print_text(await graph_mermaid(db_url, uuid))
     elif json_output:
-        print_json(build_graph(db_url, uuid), pretty=pretty)
+        print_json(await build_graph(db_url, uuid), pretty=pretty)
     else:
-        print_text(graph_text(db_url, uuid))
+        print_text(await graph_text(db_url, uuid))
+
+
+@app.command()
+def translate(
+    db_url: Annotated[
+        str,
+        typer.Argument(
+            help="Full SQLAlchemy database URL (for table name resolution)",
+            envvar="PY1CV8_DB_URL",
+            show_envvar=True,
+        ),
+    ],
+    query: Annotated[
+        str,
+        typer.Argument(help="1C query text or BSL source code (see --bsl)"),
+    ],
+    bsl_mode: Annotated[
+        bool,
+        typer.Option("--bsl", "-b", help="Input is BSL code, extract queries from Запрос.Текст"),
+    ] = False,
+    dialect: Annotated[
+        str,
+        typer.Option("--dialect", "-d", help="Target SQL dialect: postgresql or mssql"),
+    ] = "postgresql",
+    pretty: Annotated[
+        bool,
+        typer.Option("--pretty", "-p", help="Pretty-print JSON output"),
+    ] = False,
+) -> None:
+    """Translate 1C query language to SQL.
+
+    Примеры::
+
+        py1cv8 translate "postgresql://..." "ВЫБРАТЬ Наименование ИЗ Справочник.Контрагенты"
+
+        py1cv8 translate "postgresql://..." --bsl "Запрос.Текст = \"ВЫБРАТЬ 1\";"
+    """
+    db_url = normalise_db_url(db_url)
+    from dataclasses import asdict
+
+    # Build resolver from context
+    from py1cv8.context import build_llm_context
+    from py1cv8.query_translator import (
+        extract_queries_from_bsl,
+        translate_1c_query,
+    )
+
+    ctx = build_llm_context(db_url)
+    table_by_name: dict[tuple[str, str], str] = {}
+    for obj in ctx["objects"]:
+        tn = obj.get("table_name")
+        tech = obj.get("tech_name") or ""
+        if tn and "." in tech:
+            obj_type, obj_name = tech.split(".", 1)
+            table_by_name[(obj_type, obj_name)] = tn
+
+    def resolver(obj_type: str, obj_name: str) -> str | None:
+        return table_by_name.get((obj_type, obj_name))
+
+    try:
+        if bsl_mode:
+            result = extract_queries_from_bsl(query, resolver=resolver, dialect=dialect)
+            output = asdict(result)
+        else:
+            tq = translate_1c_query(query, resolver=resolver, dialect=dialect)
+            output = asdict(tq)
+
+        print_json(output, pretty=pretty)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1) from e

@@ -13,13 +13,146 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from py1cv8.config import (
-    COMPANION_TABLE_PARENT,
-    COMPANION_TABLE_TYPES,
-    MAIN_TABLE_TYPES,
-    SERVICE_TABLE_TYPES,
-    SUB_TABLE_PARENT,
-    SUB_TABLE_TYPES,
+# ── DBNames type → category (from schema discovery) ────────────────────────
+
+# ── Sub-table types and their parent type names ────────────────────────────
+
+SUB_TABLE_TYPES: frozenset[str] = frozenset(
+    {
+        "Fld",
+        "VT",
+        "LineNo",
+        "ByDims",
+        "BPr",
+        "BPrPoints",
+        "Node",
+    }
+)
+
+SUB_TABLE_PARENT: dict[str, str] = {
+    "Fld": "Reference",
+    "VT": "Reference",
+    "LineNo": "Reference",
+    "ByDims": "Reference",
+    "BPr": "BusinessProcess",
+    "BPrPoints": "BusinessProcess",
+    "Node": "ExchangePlan",
+}
+
+# ── Subordinate-main companion table mapping ───────────────────────────────
+# These accompany a main table (same UUID) but are standalone tables
+# with their own schema, not true sub-tables.
+
+COMPANION_TABLE_TYPES: frozenset[str] = frozenset(
+    {
+        "ChrcSInf",
+        "IntegServiceSettings",
+        "IntegServiceMsgBody",
+        "IntegServiceExtMsgBody",
+        "EcsBotInQueue",
+    }
+)
+
+COMPANION_TABLE_PARENT: dict[str, str] = {
+    "ChrcSInf": "Chrc",
+    "IntegServiceSettings": "IntegrationService",
+    "IntegServiceMsgBody": "IntegrationService",
+    "IntegServiceExtMsgBody": "IntegrationService",
+    "EcsBotInQueue": "Bots",
+}
+
+# ── Table naming conventions ───────────────────────────────────────────────
+
+MAIN_TABLE_TYPES: frozenset[str] = frozenset(
+    {
+        "Reference",
+        "Document",
+        "InfoRg",
+        "Chrc",
+        "Const",
+        "Enum",
+        "ScheduledJobs",
+        "ChrcSInf",
+        "AccRg",
+        "AccRgT",
+        "CalcRg",
+        "CalcRgT",
+        "BusinessProcess",
+        "ExchangePlan",
+        "Sequence",
+        "DocumentJournal",
+        "Task",
+        "CommonAttribute",
+        "SessionParameter",
+        "SettingsStorage",
+    }
+)
+
+SERVICE_TABLE_TYPES: frozenset[str] = frozenset(
+    {
+        "STTSettings",
+        "STTGrammar",
+        "STTGrammarChecksum",
+        "STTModels",
+        "STTModelsDesc",
+        "Descr",
+        "Acoustic",
+        "LangModel",
+        "DbSegments",
+        "DbSegmentsItems",
+        "ExtensionsRestruct",
+        "ExtensionsRestructNGS",
+        "ExtensionsInfo",
+        "ExtensionsInfoNGS",
+        "SystemSettings",
+        "CommonSettings",
+        "RepSettings",
+        "RepVarSettings",
+        "FrmDtSettings",
+        "DynListSettings",
+        "ErrorProcessingSettings",
+        "URLExternalData",
+        "InternalSettings",
+        "DefaultSystemSettings",
+        "DefaultInternalSettings",
+        "DbCopiesInfoBaseUse",
+        "DbCopiesUpdateTableStat",
+        "DbCopiesUpdateStat",
+        "DbCopies",
+        "DbCopiesSettings",
+        "DbCopiesTrLogs",
+        "DbCopiesTrTables",
+        "DbCopiesUpdates",
+        "DbCopiesTablesStates",
+        "DbCopiesInitialLast",
+        "DbCopiesTrChanges",
+        "DbCopiesTrChObj",
+        "MobileClientDataExchange",
+        "Bots",
+        "ODataSettings",
+        "DataHistoryQueue0",
+        "DataHistoryVersions",
+        "DataHistoryLatestVersions",
+        "DataHistoryMetadata",
+        "DataHistorySettings",
+        "DataHistoryAfterWriteQueue",
+        "DataHistoryLatestVerExt",
+        "DataHistoryMetadataExt",
+        "DataHistorySettingsExt",
+        "DataHistoryVersionsExt",
+        "RefOpt",
+        "ChrcOpt",
+        "AccOpt",
+        "CKindsOpt",
+        "UsersWorkHistory",
+        "UsersDmm",
+        "FilesStruDmm",
+        "IBVersionStruDmm",
+        "YearOffset",
+        "Consts",
+        "ExtDataSrcPrms",
+        "WebSocketClients",
+    }
 )
 
 
@@ -52,11 +185,13 @@ def parse_dbnames_text(text: str) -> list[DBNamesEntry]:
         r'"([^"]+)",(\d+)\}',
         text,
     ):
-        entries.append(DBNamesEntry(
-            uuid=m.group(1).lower(),
-            type_name=m.group(2),
-            number=int(m.group(3)),
-        ))
+        entries.append(
+            DBNamesEntry(
+                uuid=m.group(1).lower(),
+                type_name=m.group(2),
+                number=int(m.group(3)),
+            )
+        )
     return entries
 
 
@@ -126,8 +261,11 @@ class DBNamesProviderImpl:
         """Generate SQL table name for a DBNames entry dict."""
         tname = entry.get("type_name", "")
         num = entry.get("number", 0)
-        return generate_db_name(DBNamesEntry(
-            uuid=entry.get("uuid", ""),
-            type_name=tname,
-            number=num,
-        ), parent_db_name)
+        return generate_db_name(
+            DBNamesEntry(
+                uuid=entry.get("uuid", ""),
+                type_name=tname,
+                number=num,
+            ),
+            parent_db_name,
+        )

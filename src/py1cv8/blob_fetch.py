@@ -1,28 +1,36 @@
-"""Fetch and decompress a specific blob from config/configcas tables.
+"""Извлечение и распаковка блобов из таблиц config/configcas базы данных 1С.
 
-LLM uses this when it encounters an unknown type_num or wants to inspect
-the raw binary metadata of a specific 1C object.
+Таблицы **config** и **configcas** — это системные таблицы PostgreSQL, в которых
+1С:Предприятие хранит бинарные блобы метаданных конфигурации. Каждая строка содержит:
+
+- ``filename`` — идентификатор записи (часто содержит UUID объекта)
+- ``partno`` — номер части (один объект может занимать несколько частей)
+- ``binarydata`` — zlib-сжатый двоичный блоб с сериализованными метаданными
+
+**config** — основная таблица конфигурации. Используется по умолчанию.
+**configcas** — дополнительная таблица (configuration case-sensitive). Содержит
+дубли/варианты для case-sensitive режимов. Обычно нужна только когда объект не
+найден в config.
+
+ORM-слой вынесен в ``py1cv8.sql.orm``. Этот модуль занимается **только**
+декомпрессией и парсингом блобов.
 """
 
 from __future__ import annotations
 
 import re
 import struct
-from typing import Any
-from urllib.parse import urlparse
 
-from sqlalchemy import text
-
-from py1cv8.compress import decode_blob_chunk, try_decompress
-from py1cv8.config import TYPE_MAP
-from py1cv8.db import get_session, quote_ident
-from py1cv8.metadata_binary import parse_metadata_blob
-from py1cv8.models import Config, ConfigCas
+from py1cv8.blob.decompress import decode_blob_chunk, try_decompress
+from py1cv8.metadata_binary import TYPE_MAP, parse_metadata_blob
+from py1cv8.sql.orm import ConfigTable, select_config_rows
 
 BLOB_FORMAT_DESCRIPTION: str = """\
 # 1C binary metadata blob format
 
-Blobs in config/configcas store one or more serialized 1C metadata objects.
+Each row of the PostgreSQL tables **config** / **configcas** contains a zlib-compressed
+blob with one or more serialized 1C metadata objects. Table ``config`` is the primary
+storage; ``configcas`` holds case-sensitive variants.
 Format types:
 
 ## 1. Bracket format (most common)
@@ -44,61 +52,67 @@ Format types:
 """
 
 
-def fetch_blob(
+async def extract_metadata_blobs(
     db_url: str,
-    table: str = "config",
+    *,
+    table: ConfigTable = "config",
     filename: str | None = None,
     partno: int | None = None,
     uuid: str | None = None,
     limit: int = 20,
+    raw: bool = False,
 ) -> list[dict]:
-    """Search config/configcas for matching blobs, decompress, return as text.
+    """Извлечь блобы из config/configcas, декомпрессировать и вернуть текстом.
 
-    Parameters
+    Ищет совпадающие строки по UUID / имени файла / номеру части,
+    распаковывает zlib-данные и парсит метаданные 1С.
+
+    Параметры
     ----------
     db_url : str
-        SQLAlchemy database URL.
+        URL подключения к БД (SQLAlchemy).
     table : str
-        ``"config"`` or ``"configcas"``.
-    filename : str, optional
-        SQL ``ILIKE`` pattern for the filename column.
-    partno : int, optional
-        Exact part number filter.
-    uuid : str, optional
-        UUID to search for in filename.
-    limit : int
-        Max rows to return.
+        Таблица PostgreSQL для поиска:
 
-    Returns
+        - ``"config"`` — основная таблица метаданных 1С (используется по умолчанию).
+          Здесь хранится подавляющее большинство объектов.
+        - ``"configcas"`` — дополнительная таблица для case-sensitive режимов.
+          Проверяйте её, если объект не найден в ``config``.
+    filename : str, optional
+        Паттерн SQL ``ILIKE`` для фильтрации по имени файла.
+    partno : int, optional
+        Точный номер части (partno).
+    uuid : str, optional
+        UUID для поиска в имени файла.
+    limit : int
+        Максимальное количество возвращаемых строк.
+    raw : bool
+        Включить распакованное содержимое в результат. По умолчанию ``False``.
+        Ставьте ``True``, когда нужен полный текст блоба (describe/graph).
+
+    Возвращает
     -------
     list[dict]
-        Each dict has keys: filename, partno, size, decompressed_size,
-        content (raw text), parsed (structured fields or None),
-        format_description (rules for interpreting the format).
+        Словарь с ключами: filename, partno, size, decompressed_size,
+        parsed (структурированные поля или None), category (название из TYPE_MAP).
+        При ``raw=True`` дополнительно возвращается ``content``.
     """
-    parsed = urlparse(db_url)
-    path = parsed.path.strip("/")
-    if not path:
-        raise ValueError(f"Database URL must include a path (database name): {db_url}")
-    dbname = path.rsplit("/", 1)[-1]
 
-    session = get_session(dbname)
-    model_cls: Any
-    if table == "config":
-        model_cls = Config
-    elif table == "configcas":
-        model_cls = ConfigCas
-    else:
-        session.close()
-        raise ValueError(f"Unknown table: {table!r}. Choose from: config, configcas")
+    # ORM-слой: выборка сырых строк из БД
+    rows = await select_config_rows(
+        db_url=db_url,
+        table=table,
+        uuid=uuid,
+        filename=filename,
+        partno=partno,
+        limit=limit,
+    )
 
-    rows = _query(session, model_cls, uuid, filename, partno, limit, db_url)
-    session.close()
-
+    # Парсинг/декомпрессия: обработка каждого блоба в памяти
     results: list[dict] = []
     for row in rows:
-        raw = bytes(row["binarydata"]) if row.get("binarydata") else b""
-        if not raw:
+        blob_data = row["binarydata"]
+        if not blob_data:
             results.append(
                 {
                     "filename": row["filename"],
@@ -108,20 +122,21 @@ def fetch_blob(
             )
             continue
 
-        dec = try_decompress(raw)
+        dec = try_decompress(blob_data)
         if not dec:
             results.append(
                 {
                     "filename": row["filename"],
                     "partno": row["partno"],
-                    "size": len(raw),
+                    "size": len(blob_data),
                     "error": "decompress failed",
                 }
             )
             continue
 
-        content = None
         type_num = None
+        parsed_info = None
+        content_text: str | None = None
 
         txt = decode_blob_chunk(dec) or dec.decode("utf-8", errors="replace").lstrip("\ufeff")
         m = re.search(r"\{1,\s*\r?\n?\{(\d+)", txt[:5000])
@@ -129,67 +144,47 @@ def fetch_blob(
             candidate = int(m.group(1))
             if 0 <= candidate <= 99:
                 type_num = candidate
-            content = txt[:50000]
 
+        # Parse structured fields (always — cheap)
+        if m:
+            parsed_info = parse_metadata_blob(txt[:50000])
+
+        # MOXCEL header detection (only need for type_num if bracket not found)
         if dec[:6] == b"MOXCEL" and len(dec) >= 13:
             tn = struct.unpack("<H", dec[11:13])[0]
             if tn <= 99:
                 type_num = tn
-            after_header = dec[13:]
-            txt2 = decode_blob_chunk(after_header) or after_header.decode(
-                "utf-8", errors="replace"
-            ).lstrip("\ufeff")
-            if not content:
-                content = txt2[:50000]
 
-        if content is None:
-            content = repr(dec[:500])
+        # Build result without content by default
+        item: dict = {
+            "filename": row["filename"],
+            "partno": row["partno"],
+            "size": len(blob_data),
+            "decompressed_size": len(dec),
+            "parsed": parsed_info,
+            "category": (TYPE_MAP.get(type_num, "Unknown") if type_num is not None else None),
+        }
 
-        # Parse structured fields from the bracket format
-        parsed_info = parse_metadata_blob(content) if m else None
-        category = TYPE_MAP.get(type_num, "Unknown") if type_num is not None else None
+        # Include raw content only when requested
+        if raw:
+            if m and parsed_info is not None:
+                content_text = txt[:50000]
+            elif dec[:6] == b"MOXCEL":
+                after_header = dec[13:]
+                content_text = (
+                    decode_blob_chunk(after_header)
+                    or after_header.decode("utf-8", errors="replace").lstrip("\ufeff")
+                )[:50000]
+            else:
+                content_text = repr(dec[:500])
+            item["content"] = (
+                content_text if len(content_text) <= 50000 else content_text[:50000] + "..."
+            )
 
-        results.append(
-            {
-                "filename": row["filename"],
-                "partno": row["partno"],
-                "size": len(raw),
-                "decompressed_size": len(dec),
-                "content": content if len(content) <= 50000 else content[:50000] + "...",
-                "parsed": parsed_info,
-                "category": category,
-                "format_description": BLOB_FORMAT_DESCRIPTION,
-            }
-        )
+        results.append(item)
 
     return results
 
 
-def _query(
-    session, model_cls, uuid, filename, partno, limit, db_url
-):
-    table_name = "config" if model_cls.__tablename__ == "config" else "configcas"
-
-    conditions: list[str] = []
-    params: dict = {}
-
-    if uuid:
-        conditions.append("CAST(filename AS text) ILIKE :pattern")
-        params["pattern"] = f"%{uuid.lower()}%"
-    elif filename:
-        conditions.append("CAST(filename AS text) ILIKE :pattern")
-        params["pattern"] = filename.replace("%", "%%")
-
-    if partno is not None:
-        conditions.append("partno = :partno")
-        params["partno"] = partno
-
-    where_clause = " AND ".join(conditions) if conditions else "1=1"
-    sql = text(
-        f"SELECT * FROM {quote_ident(table_name, db_url)}"
-        f" WHERE {where_clause} "
-        f"ORDER BY filename, partno LIMIT {int(limit)}"
-    )
-    result = session.execute(sql, params)
-    columns = list(result.keys())
-    return [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
+# — асинхронный алиас —
+fetch_blob = extract_metadata_blobs

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from sqlalchemy import Integer, LargeBinary, String
 
-from py1cv8.models import (
+from py1cv8.sql.orm.models import (
     Base,
     Config,
     ConfigCas,
-    Params,
     InformationSchemaColumn,
-    InformationSchemaTableConstraint,
     InformationSchemaKeyColumnUsage,
+    InformationSchemaTableConstraint,
+    Params,
 )
 
 

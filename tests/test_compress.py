@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import zlib
 
-from py1cv8.compress import (
+from py1cv8.blob.decompress import (
     decode_blob_chunk,
     extract_code_blocks,
     try_decompress,
@@ -178,10 +178,7 @@ def test_extract_code_blocks_removes_timestamp_lines():
     """Lines matching timestamp pattern are filtered out."""
     bom = b"\xef\xbb\xbf"
     text_part = (
-        "Процедура СДатами()\n"
-        "20231201 20231202 abc123\n"
-        "\tСообщить(1);\n"
-        "КонецПроцедуры".encode()
+        "Процедура СДатами()\n20231201 20231202 abc123\n\tСообщить(1);\nКонецПроцедуры".encode()
     )
     dec = bom + text_part
     blocks = extract_code_blocks(dec)
@@ -192,11 +189,7 @@ def test_extract_code_blocks_removes_timestamp_lines():
 def test_extract_code_blocks_collapse_blank_lines():
     """Consecutive blank lines are collapsed to one."""
     bom = b"\xef\xbb\xbf"
-    text_part = (
-        "Процедура СПробелами()\n\n\n\n"
-        "\tСообщить(1);\n"
-        "КонецПроцедуры".encode()
-    )
+    text_part = "Процедура СПробелами()\n\n\n\n\tСообщить(1);\nКонецПроцедуры".encode()
     dec = bom + text_part
     blocks = extract_code_blocks(dec)
     assert len(blocks) == 1
