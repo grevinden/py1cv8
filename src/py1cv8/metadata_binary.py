@@ -1,11 +1,8 @@
 """Binary metadata parser for 1C config/configcas blobs.
 
-Responsibilities:
   - Parse {1,\n{type pattern from decompressed config blobs
   - Extract type_num from MOXCEL header
   - Build UUID -> metadata map from config table (via SQLAlchemy ORM)
-
-Satisfies: contracts.metadata.MetadataProvider
 """
 
 from __future__ import annotations
@@ -17,7 +14,6 @@ from typing import Any
 from sqlalchemy import select
 
 from py1cv8.compress import decode_blob_chunk, try_decompress
-from py1cv8.contracts.database import DatabaseSessionProvider
 from py1cv8.models import Config
 
 # ── Metadata parser ────────────────────────────────────────────────────────
@@ -184,79 +180,4 @@ def build_metadata_map(dbname: str) -> dict[str, dict]:
     return meta_map
 
 
-# ── Class implementation (satisfies MetadataProvider contract) ────────────
 
-
-class ConfigMetadataProvider:
-    """Metadata from config/configcas binary blobs via injected DB session.
-
-    Satisfies: contracts.metadata.MetadataProvider
-    """
-
-    def __init__(self, db_provider: DatabaseSessionProvider) -> None:
-        """*db_provider* must satisfy DatabaseSessionProvider protocol."""
-        self._db = db_provider
-
-    def build_metadata_map(self, dbname: str) -> dict[str, dict]:
-        """Build UUID -> metadata info from Config table."""
-        with self._db.session_scope(dbname) as session:
-            q = select(Config).order_by(Config.partno)
-            rows = session.scalars(q).all()
-
-        meta_map: dict[str, dict] = {}
-
-        for row in rows:
-            if not row.binarydata or row.partno is None:
-                continue
-            raw = bytes(row.binarydata)
-            sz = len(raw)
-            if sz < 20 or sz > 500_000:
-                continue
-
-            dec = try_decompress(raw)
-            if not dec:
-                continue
-
-            if not re.search(rb"\{1,\s*\r?\n?\{(\d+)", dec[:2000]):
-                continue
-
-            txt = decode_blob_chunk(dec) or dec.decode("utf-8", errors="replace").lstrip("\ufeff")
-            info = parse_metadata_blob(txt)
-            if info and info.get("uuid"):
-                uuid_val = info.get("uuid", "")
-                assert isinstance(uuid_val, str)
-                uuid_lower = uuid_val.lower()
-                existing = meta_map.get(uuid_lower)
-                if existing is None or existing.get("tech_name") == "" and info.get("tech_name"):
-                    meta_map[uuid_lower] = info
-
-                fn_uuid_m = re.search(
-                    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-                    row.filename,
-                )
-                if fn_uuid_m:
-                    fn_uuid = fn_uuid_m.group(0).lower()
-                    if fn_uuid != uuid_lower:
-                        existing_fn = meta_map.get(fn_uuid)
-                        new_type_num = info.get("type_num")
-                        if existing_fn is None:
-                            meta_map[fn_uuid] = {
-                                "uuid": fn_uuid,
-                                "tech_name": "",
-                                "display_names": {},
-                                "type_num": new_type_num,
-                            }
-                        elif existing_fn.get("type_num") is None and new_type_num is not None:
-                            existing_fn["type_num"] = new_type_num
-
-        return meta_map
-
-    @staticmethod
-    def parse_metadata_blob(txt: str) -> dict | None:
-        """Delegate to module-level parse_metadata_blob."""
-        return parse_metadata_blob(txt)
-
-    @staticmethod
-    def extract_type_from_configcas_blob(dec: bytes) -> int | None:
-        """Delegate to module-level extract_type_from_configcas_blob."""
-        return extract_type_from_configcas_blob(dec)

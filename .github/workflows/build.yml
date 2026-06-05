@@ -1,0 +1,54 @@
+name: Build
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install nuitka zstandard
+      - run: pip install -e .
+      - name: Build with Nuitka (MSVC + LTO)
+        run: python -m nuitka --onefile --lto=yes --output-dir=dist --output-filename=py1cv8-win-x64.exe src/py1cv8/__main__.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: py1cv8-windows-x64
+          path: dist/py1cv8-win-x64.exe
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc patchelf
+      - run: pip install nuitka zstandard
+      - run: pip install -e .
+      - name: Build with Nuitka (gcc + LTO)
+        run: python -m nuitka --onefile --lto=yes --output-dir=dist --output-filename=py1cv8-linux-x64 src/py1cv8/__main__.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: py1cv8-linux-x64
+          path: dist/py1cv8-linux-x64
+
+  release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            py1cv8-windows-x64/py1cv8-win-x64.exe
+            py1cv8-linux-x64/py1cv8-linux-x64
+          generate_release_notes: true

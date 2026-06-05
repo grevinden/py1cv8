@@ -57,29 +57,14 @@ def test_cli_app_invoke() -> None:
     assert "Usage" in result.stdout
 
 
-def test_parse_db_url_used_by_schema_command() -> None:
-    """Verify _parse_db_url works as the schema command uses it."""
-    base, dbname = _parse_db_url("postgresql+psycopg2://u:p@h:5433/mydb")
-    assert dbname == "mydb"
-    assert base == "postgresql+psycopg2://u:p@h:5433"
-
-
-def test_cli_schema_command_via_runner() -> None:
-    """Schema CLI command prints JSON summary (covers lines 67-68)."""
+def test_cli_commands_listed() -> None:
+    """CLI has context and sql commands."""
     from typer.testing import CliRunner
 
     from py1cv8.cli import app
 
     runner = CliRunner()
-    result = runner.invoke(
-        app,
-        [
-            "schema",
-            "--db-url",
-            "postgresql+psycopg2://postgres:qwaseD12@localhost:5433/test",
-        ],
-    )
+    result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    import json
-    data = json.loads(result.stdout)
-    assert data["database"] == "test"
+    assert "context" in result.stdout
+    assert "sql" in result.stdout

@@ -10,10 +10,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 from pydantic import PostgresDsn
-from sqlalchemy import create_engine
+from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-_engines: dict[str, object] = {}
+_engines: dict[str, Engine] = {}
 _sessions: dict[str, sessionmaker] = {}
 _base_url: str = "postgresql+psycopg2://postgres:qwaseD12@localhost:5433"
 
@@ -34,8 +34,7 @@ def _dsn(dbname: str) -> str:
     return f"{_base_url}/{dbname}"
 
 
-def get_engine(dbname: str):
-    """Return (and cache) a SQLAlchemy engine for the given database."""
+def get_engine(dbname: str) -> Engine:
     if dbname not in _engines:
         engine = create_engine(
             _dsn(dbname),
@@ -71,7 +70,7 @@ class PgDatabaseProvider:
 
     def __init__(self, base_url: PostgresDsn | str) -> None:
         self._base_url = str(base_url).rstrip("/")
-        self._engines: dict[str, object] = {}
+        self._engines: dict[str, Engine] = {}
         self._sessions: dict[str, sessionmaker] = {}
 
     def _dsn(self, dbname: str) -> str:

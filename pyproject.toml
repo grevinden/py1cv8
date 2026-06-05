@@ -5,21 +5,30 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "py1cv8"
 version = "0.1.0"
-description = "MCP-сервер для прямого SQL-доступа к базам 1С (PostgreSQL) с пониманием метаданных"
+description = "LLM-контекст для баз 1С: метаданные + read-only SQL (PostgreSQL / MSSQL)"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "sqlalchemy>=2.0",
     "psycopg2-binary>=2.9",
-    "chardet>=5.2",
+    "pyodbc>=5.2",
+    "charset-normalizer>=3.4",
     "asyncpg>=0.31",
     "mcp>=1.27",
     "typer>=0.15",
+    "sitecustomize",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.8",
+    "mypy>=1.13",
 ]
 
 [project.scripts]
 py1cv8 = "py1cv8.cli:app"
-py1cv8-mcp = "py1cv8.mcp_server:run"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -57,3 +66,6 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+
+[tool.uv.sources]
+sitecustomize = { git = "https://gitflic.ru/project/rav/sitecustomize.git" }

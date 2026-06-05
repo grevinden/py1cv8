@@ -451,14 +451,14 @@ def test_type_info_fixed_decimal() -> None:
 
 
 def test_synonym_empty() -> None:
-    from py1cv8.metadata_xml import _parse_synonym
+    from py1cv8.mx_parser import _parse_synonym
 
     result = _parse_synonym(None)
     assert result == {}
 
 
 def test_generated_types_missing() -> None:
-    from py1cv8.metadata_xml import _parse_generated_types
+    from py1cv8.mx_parser import _parse_generated_types
 
     root = ET.fromstring("<root><irrelevant/></root>")
     assert _parse_generated_types(root) == []
@@ -510,7 +510,7 @@ def test_type_info_date_no_fractions() -> None:
 
 def test_parse_type_none() -> None:
     """_parse_type returns empty AttributeTypeInfo when el is None."""
-    from py1cv8.metadata_xml import _parse_type
+    from py1cv8.mx_parser import _parse_type
     result = _parse_type(None)
     assert isinstance(result, AttributeTypeInfo)
     assert result.types == []
@@ -518,25 +518,25 @@ def test_parse_type_none() -> None:
 
 def test_int_or_none_value_error() -> None:
     """_int_or_none returns None on ValueError."""
-    from py1cv8.metadata_xml import _int_or_none
+    from py1cv8.mx_parser import _int_or_none
     assert _int_or_none("not_a_number") is None
 
 
 def test_int_or_none_none() -> None:
     """_int_or_none returns None on None input."""
-    from py1cv8.metadata_xml import _int_or_none
+    from py1cv8.mx_parser import _int_or_none
     assert _int_or_none(None) is None
 
 
 def test_int_or_none_valid() -> None:
     """_int_or_none returns int on valid input."""
-    from py1cv8.metadata_xml import _int_or_none
+    from py1cv8.mx_parser import _int_or_none
     assert _int_or_none("42") == 42
 
 
 def test_parse_properties_none() -> None:
     """_parse_properties returns empty dict when props is None."""
-    from py1cv8.metadata_xml import _parse_properties
+    from py1cv8.mx_parser import _parse_properties
     assert _parse_properties(None) == {}
 
 

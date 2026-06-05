@@ -4,10 +4,10 @@
 
 ---
 
-## ПРОЕКТ: py1cv8 — MCP-сервер для прямого SQL-доступа к 1С через нейросеть
+## ПРОЕКТ: py1cv8 — парсер 1С-метаданных + генератор LLM-контекста
 
 ### Общая цель
-Создать **MCP-сервер** (Model Context Protocol), который даёт нейросети прямой SQL-доступ к базам 1С (PostgreSQL/MSSQL) с полным пониманием метаданных — минуя сервер приложения 1С. Нейросеть должна анализировать метаданные, понимать структуру таблиц, связи между объектами, типы данных и решать сложные задачи аналитики напрямую через SQL.
+**Парсер 1С-метаданных + генератор LLM-контекста.** Читает двоичные блобы конфигурации 1С (config/configcas) и выдаёт структурированное описание для LLM. Нейросеть сама анализирует схему БД через SQL, строит связи и пишет запросы — `py1cv8` даёт ей то, что через SQL не достать: распакованные метаданные объектов, type_num, DBNames-правила.
 
 ### Ключевые слои архитектуры
 
@@ -15,7 +15,7 @@
 2. **Metadata mapping** — маппинг DBNames → 1C-типы объектов (type_num из блобов)
 3. **Relationship graph** — граф связей между объектами (Ref → Owner, Parent, и т.д.)
 4. **Type bridge** — конвертация 1С-типов в SQL-типы в понятное LLM описание
-5. **MCP-сервер** — точка входа для нейросети: tools/resources для query, schema, metadata
+5. **MCP-сервер** — точка входа для нейросети: context + sql proxy
 
 ### Модульная архитектура (SRP)
 
@@ -27,30 +27,39 @@ src/py1cv8/
 ├── db.py                # Подключение к БД (read-only)
 ├── compress.py          # zlib-декомпрессия, детекция кодировок, BOM-сплит
 ├── bsl.py               # Детекция BSL-ключевых слов, извлечение имени из кода
-├── query_translator.py  # Парсинг 1C-запросов из BSL, трансляция → PostgreSQL/MSSQL SQL через SQLAlchemy expression language + @compiles
 ├── metadata_binary.py   # Парсинг {1,\n{type} блобов config, MOXCEL-заголовки
 ├── metadata_xml.py      # Парсер XML-метаданных .export_from_1c/ (модели, Type Bridge)
 ├── dbnames.py           # DBNames-парсинг, генерация имён таблиц
-├── relationships.py     # Граф связей между таблицами по RRef/RTRef/Owner/Parent
-├── schema.py            # SchemaRegistry + SchemaLoader (оркестрация discovery)
-├── mcp_server.py        # MCP-сервер: 5 tools + resources через stdio
-├── bootstrap.py         # DI-контейнер: create_schema_loader, create_registry
+├── type_enums.py        # 114 встроенных enum-классов из 1C XSD
+├── context.py           # Генератор LLM-контекста: метаданные + правила DBNames/schema
+├── sql_proxy.py         # Read-only SQL endpoint для LLM (SELECT/EXPLAIN/WITH)
+├── agent_prompt.py      # LLM agent prompt (выводится при py1cv8 без аргументов)
+├── cli.py               # CLI: agent | context | sql | blob | find | schema | resolve
+├── json_encoder.py      # JSON-encoder: UUID/memoryview → hex-строка
+├── find_objects.py      # find — поиск объектов по имени
+├── schema_describe.py   # schema — структура таблицы
+├── describe_object.py   # describe — полное описание объекта (метаданные + схема + семпл + blob)
+├── resolve_uuid.py      # resolve — UUID → _Description / _Code (метаданные + данные)
+├── blob_fetch.py        # Извлечение и декомпрессия блобов config/configcas
+├── v8unpack_types.py    # type_num → v8unpack-имена
 └── __main__.py          # Точка входа: диспетчеризация по командам
 ```
 
 ### DB credentials
-- Хост: `localhost:5433`, пользователь: `postgres`, пароль: `qwaseD12`
-- Базы: `MessageCenter` (config) и `test` (configcas)
-- Диалекты: `DB_DIALECT` в config.py (dbname → ``"postgresql"`` / ``"mssql"``)
-- Read-only: никаких INSERT/UPDATE/DELETE
-
 ### Запуск
 ```bash
-python -m py1cv8 mcp          # MCP-сервер для LLM
-python -m py1cv8 schema [db]  # Сводка схемы БД
-python -m pytest tests/       # 101 тест
+python -m py1cv8              # LLM agent prompt (автономная работа нейросети)
+python -m py1cv8 context [db_url] # LLM-контекст: метаданные + правила DBNames/schema
+python -m py1cv8 sql [db_url] [query]  # Read-only SQL запрос
+python -m py1cv8 blob [db_url] --uuid [uuid]  # Сырой блоб config/configcas
+python -m py1cv8 agent        # Явный вывод agent prompt
+python -m py1cv8 --help       # Справка
+python -m pytest tests/           # 101 тест
 python -m ruff check src/py1cv8/
 python -m mypy src/py1cv8/
+python -m nuitka --onefile --clang --lto=yes --output-dir=dist src/py1cv8/__main__.py  # Nuitka onefile (Intel clang-cl)
+build_intel.cmd        # Полная сборка с Intel oneAPI + LTO
+python -m nuitka --onefile --lto=yes --output-dir=dist src/py1cv8/__main__.py  # Nuitka onefile (MSVC)
 ```
 
 ### TYPE_MAP (категории файлов)
@@ -68,6 +77,43 @@ python -m mypy src/py1cv8/
 | 5,57 | OtherTypes | Прочие (14) |
 | 8 | Ext | Не представлены в MessageCenter |
 | 9 | Reports | Не представлены в MessageCenter |
+
+### ⚠️ ВАЖНО: type_num ≠ номер таблицы
+
+`type_num` — это **код категории** объекта (57 = Catalogs, 22 = Documents), а НЕ номер таблицы в БД.
+
+**Пример путаницы:**
+```
+type_num=57 (Catalogs) — таблица вовсе НЕ _Reference57.
+Фактические таблицы справочников: _Reference53, _Reference54, _Reference55, _Reference117...
+```
+
+Номер таблицы (суффикс) — это отдельный **внутренний счётчик 1С**, который:
+- присваивается объекту при создании в конфигураторе
+- НЕ связан с type_num
+- хранится в бинарных DBNames (таблица `params`)
+
+**Как узнать правильную таблицу:**
+1. `context` теперь включает поле `table_name` в каждом объекте (например `"_Reference53"`)
+2. DBNames-парсинг из `params` даёт маппинг UUID → table_name
+3. `describe <uuid>` показывает table_name, схему и данные одной командой
+4. `resolve <uuid>` находит объект метаданных и показывает его таблицу
+
+### Формат _RTRef (typed reference)
+
+Поля вида `_Fld{N}_RTRef` содержат 16 байт:
+- **байты 0-3**: тип ссылки (uint32 BE) — фактически это **номер таблицы**
+  - Пример: `00000075` hex (bytes `\x00\x00\x00\x75`) → 0x75 = 117 → таблица `_Reference117`
+  - Пример: `00000055` hex (bytes `\x00\x00\x00\x55`) → 0x55 = 85 → таблица `_Reference85`
+- **байты 4-15**: UUID записи (12 байт, может быть нулевым)
+
+**Как определить таблицу по _RTRef:**
+```python
+import struct
+ref_bytes = bytes.fromhex("00000075")  # из базы приходит как bytea
+table_num = struct.unpack(">I", ref_bytes[:4])[0]  # → 117
+table_name = f"_Reference{table_num}"
+```
 
 ### Формат метаданных
 ```
@@ -196,6 +242,29 @@ python -m mypy src/py1cv8/
 
 ---
 
+---
+
+## ОБЩЕНИЕ С ПОЛЬЗОВАТЕЛЕМ
+
+### 8. ЧЕЛОВЕКОПОНЯТНЫЙ ВЫВОД (обязательно)
+
+**Любые данные из БД, блобов или метаданных 1С выдавай пользователю только в человекочитаемом виде.** Запрещено показывать:
+
+- сырые hex/bytes/binary дампы
+- необработанный JSON без пояснений
+- технические типы данных (`USER-DEFINED`, `mvarchar`)
+- трассировки стека или ошибки без перевода
+
+**Что делать вместо:**
+- SQL-результат → отформатированная таблица с заголовками
+- Блоб → распарсенное описание: реквизиты, код (BSL), назначение
+- Схема таблицы → описание на русском: какие колонки, их смысл
+- Связи → граф "откуда → куда" с human-readable именами
+
+Если нужно показать "как это выглядит внутри" — выводи в отдельный файл (в `Temp`), а пользователю дай краткое резюме.
+
+---
+
 ## ПОЛЕЗНЫЕ РЕСУРСЫ
 
 ### Сторонние проекты (1C binary format)
@@ -208,47 +277,6 @@ python -m mypy src/py1cv8/
 type_num извлекается из бинарного блоба config/configcas:
 1. **MOXCEL-заголовок**: байты `MOXCEL\x00\x08\x00\x01\x00\xNN\x00` (uint16 LE на позиции 11-12)
 2. **Паттерн `{1,\n{type}`**: `{1,\n{N` где N — число 0-99
-
-### query_translator.py
-
-Парсит 1C-запросы из BSL-кода и переводит их в PostgreSQL/MSSQL SQL.
-
-Использует SQLAlchemy expression language + ``@compiles`` для
-диалект-зависимых конструкций (EXTRACT vs YEAR, DATE_TRUNC vs DATETRUNC,
-LIMIT vs TOP, INTERVAL vs DATEADD, TRUE/FALSE vs 1/0 и т.д.).
-
-**Основные функции:**
-- `extract_queries_from_bsl(bsl_text, resolver, dialect="postgresql")`
-  — извлекает все `ТекстЗапроса = "..."` блоки, переводит каждый
-- `translate_1c_query(one_c_sql, table_resolver, dialect="postgresql")`
-  — трансляция одного 1C-запроса в SQL
-
-**TranslatedQuery:**
-- `.sql` — готовый SQL под указанный диалект (строка)
-- `.parameters` — список `:param` (SQLAlchemy bind params)
-- `.referenced_tables` — разрешённые таблицы
-- `.virtual_tables` — найденные виртуальные таблицы
-- `.is_dynamic` — true если конкатенация/ПолноеИмя()
-- `.note` — пояснения (virtual tables, dynamic, concat)
-
-**Трансляции:**
-| 1C-конструкция | PostgreSQL | MSSQL |
-|----------------|------------|-------|
-| `ВЫБРАТЬ ПЕРВЫЕ N` | `LIMIT N` | `SELECT TOP N` |
-| `ГОД(x)` | `EXTRACT(YEAR FROM x)` | `YEAR(x)` |
-| `МЕСЯЦ(x)` | `EXTRACT(MONTH FROM x)` | `MONTH(x)` |
-| `ДЕНЬ(x)` | `EXTRACT(DAY FROM x)` | `DAY(x)` |
-| `ЧАС(x)` | `EXTRACT(HOUR FROM x)` | `DATEPART(hour, x)` |
-| `НАЧАЛОПЕРИОДА(d, Период)` | `DATE_TRUNC('period', d)` | `DATETRUNC(period, d)` |
-| `ДОБАВИТЬКДАТЕ(d, N, Период)` | `(d + INTERVAL 'N period')` | `DATEADD(period, N, d)` |
-| `РАЗНОСТЬДАТ(d1, d2, Период)` | `DATE_PART('period', d2 - d1)` | `DATEDIFF(period, d1, d2)` |
-| `ДАТАВРЕМЯ(y,m,d)` | `MAKE_DATE(y,m,d)` | `DATEFROMPARTS(y,m,d)` |
-| `ИСТИНА/ЛОЖЬ` | `TRUE/FALSE` | `1/0` |
-| `ЕСТЬNULL(a, b)` | `COALESCE(a, b)` | `COALESCE(a, b)` |
-| `ССЫЛКА` (как keyword) | `IS OF` | `IS OF` |
-| `&ИмяПараметра` | `:ИмяПараметра` | `:ИмяПараметра` (SQLAlchemy bindparam) |
-
-**Resolver:** функция `(obj_type, obj_name) -> main_table | None`, маппит 1C-объекты на SQL-таблицы.
 
 ### Непокрытые типы (нет type_num без БД)
 25 типов без известного type_num: `Bots`, `BusinessProcesses`, `Catalogs`, `CommandGroups`, `CommonAttributes`, `CommonCommands`, `CommonPictures`, `DefinedTypes`, `DocumentJournals`, `DocumentNumerators`, `EventSubscriptions`, `ExchangePlans`, `FilterCriteria`, `FunctionalOptions`, `FunctionalOptionsParameters`, `HTTPServices`, `IntegrationServices`, `Languages`, `ScheduledJobs`, `SessionParameters`, `SettingsStorages`, `Tasks`, `WebServices`, `WebSocketClients`, `XDTOPackages`

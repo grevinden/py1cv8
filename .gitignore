@@ -12,9 +12,13 @@ venv/
 .venv/
 env/
 
-# IDE
-.vscode/
-.idea/
+# IDE (launch/debug configs are tracked)
+.vscode/*
+!.vscode/launch.json
+.idea/*
+!.idea/runConfigurations/
+.zed/*
+!.zed/debug.json
 *.swp
 *.swo
 
@@ -32,3 +36,6 @@ Thumbs.db
 
 # Binary form files in 1C export subdirectories
 *.bin
+
+# Runtime log files
+unknown_types.log

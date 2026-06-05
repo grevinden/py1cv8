@@ -1,4 +1,4 @@
-"""Tests for py1cv8 core modules (decompress, decode, metadata, bsl)."""
+"""Tests for py1cv8 core modules (decompress, decode, metadata, bsl, resolve)."""
 from __future__ import annotations
 
 import zlib
@@ -209,3 +209,67 @@ def test_extract_type_braces_pattern():
 def test_extract_type_returns_none():
     assert extract_type_from_configcas_blob(b"garbage data here") is None
     assert extract_type_from_configcas_blob(b"") is None
+
+
+# ── UUID format helpers (resolve_uuid) ───────────────────────────────────
+
+
+def test_uuid_to_1c_idrref_hex() -> None:
+    from py1cv8.resolve_uuid import _normalise_uuid, _uuid_to_1c_idrref_hex
+
+    uuid_str = "9c270050-b666-dffa-11f1-46fd81c23ada"
+    hex_val = _normalise_uuid(uuid_str)
+    assert hex_val == "9c270050b666dffa11f146fd81c23ada"
+
+    idrref = _uuid_to_1c_idrref_hex(hex_val)
+    # time_low 0x9c270050 -> LE: 50 00 9c 27       -> 50009c27? no...
+    # Let's trace: hex chars: 9c 27 00 50
+    # LE byte order: byte3 byte2 byte1 byte0
+    # byte3 = 0x50, byte2 = 0x00, byte1 = 0x27, byte0 = 0x9c
+    # hex[6:8] + hex[4:6] + hex[2:4] + hex[0:2] = 50 + 00 + 27 + 9c = 5000279c
+    assert idrref == "5000279c66b6fadf11f146fd81c23ada"
+
+
+def test_uuid_to_1c_idrref_roundtrip() -> None:
+    """Verify that the 1C _IDRRef hex correctly encodes a standard UUID."""
+    from py1cv8.resolve_uuid import _normalise_uuid, _uuid_to_1c_idrref_hex
+
+    # Known mapping from actual DB: _reference53._IDRRef raw hex
+    db_raw_hex = "9c280050b666dffa11f14e880e761abe"
+    db_raw_hex_2 = "9c270050b666dffa11f144090b2c44a7"
+
+    # 1C mixed-endian decoding produces the standard UUID:
+    #   raw bytes: 9c 28 00 50 | b6 66 | df fa | 11 f1 4e 88 0e 76 1a be
+    #   time_low LE = 0x5000289c
+    #   time_mid LE = 0x66b6
+    #   time_hi  LE = 0xfadf
+    # std uuid = 5000289c-66b6-fadf-11f1-4e880e761abe
+    std_hex = _normalise_uuid("5000289c-66b6-fadf-11f1-4e880e761abe")
+    idrref = _uuid_to_1c_idrref_hex(std_hex)
+    assert idrref == db_raw_hex, (
+        f"Expected {db_raw_hex}, got {idrref}"
+    )
+
+    # Second DB sample
+    #   raw bytes: 9c 27 00 50 | b6 66 | df fa | 11 f1 44 09 0b 2c 44 a7
+    #   time_low LE = 0x5000279c
+    #   time_mid LE = 0x66b6
+    #   time_hi  LE = 0xfadf
+    # std uuid = 5000279c-66b6-fadf-11f1-44090b2c44a7
+    std_hex_2 = _normalise_uuid("5000279c-66b6-fadf-11f1-44090b2c44a7")
+    idrref_2 = _uuid_to_1c_idrref_hex(std_hex_2)
+    assert idrref_2 == db_raw_hex_2
+
+
+def test_uuid_to_1c_normalise_uuid() -> None:
+    from py1cv8.resolve_uuid import _normalise_uuid
+
+    assert _normalise_uuid("550e8400-e29b-41d4-a716-446655440000") == (
+        "550e8400e29b41d4a716446655440000"
+    )
+    assert _normalise_uuid("550E8400E29B41D4A716446655440000") == (
+        "550e8400e29b41d4a716446655440000"
+    )
+    assert _normalise_uuid("  550E8400-E29B-41D4-A716-446655440000  ") == (
+        "550e8400e29b41d4a716446655440000"
+    )

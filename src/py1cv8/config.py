@@ -34,7 +34,7 @@ TYPE_MAP: dict[int, str] = {
     2: "CommonModules",
     3: "Subsystems",
     4: "DataProcessors",
-    5: "OtherTypes",
+    5: "CommonAttributes",
     6: "Roles",
     7: "Roles",
     8: "Ext",
@@ -47,13 +47,13 @@ TYPE_MAP: dict[int, str] = {
     19: "DataProcessors",
     20: "Enums",
     22: "Documents",
-    26: "OtherTypes",
+    26: "DocumentJournals",
     30: "OtherTypes",
     33: "InformationRegisters",
     34: "ChartsOfCharacteristicTypes",
     37: "OtherTypes",
     40: "Documents",
-    57: "OtherTypes",
+    57: "Catalogs",
     68: "Ext",
 }
 
@@ -134,7 +134,7 @@ MAIN_TABLE_TYPES: frozenset[str] = frozenset({
 SERVICE_TABLE_TYPES: frozenset[str] = frozenset({
     "STTSettings", "STTGrammar", "STTGrammarChecksum",
     "STTModels", "STTModelsDesc", "Descr", "Acoustic", "LangModel",
-    "DbSegments", "DbSegmentsItems", "WebSocketClients",
+    "DbSegments", "DbSegmentsItems",
     "ExtensionsRestruct", "ExtensionsRestructNGS",
     "ExtensionsInfo", "ExtensionsInfoNGS",
     "SystemSettings", "CommonSettings",
@@ -151,17 +151,57 @@ SERVICE_TABLE_TYPES: frozenset[str] = frozenset({
     "DataHistoryQueue0", "DataHistoryVersions",
     "DataHistoryLatestVersions", "DataHistoryMetadata",
     "DataHistorySettings", "DataHistoryAfterWriteQueue",
+    "DataHistoryLatestVerExt", "DataHistoryMetadataExt",
+    "DataHistorySettingsExt", "DataHistoryVersionsExt",
     "RefOpt", "ChrcOpt", "AccOpt", "CKindsOpt",
     "UsersWorkHistory", "UsersDmm",
     "FilesStruDmm", "IBVersionStruDmm", "YearOffset",
+    "Consts", "ExtDataSrcPrms", "WebSocketClients",
 })
 
 AVAILABLE_DBS: list[str] = ["MessageCenter", "test"]
 
-# ── DB dialect registry: dbname → SQL dialect ────────────────────────────────
-# Used by query_translator and db.py to generate correct SQL per DB engine.
+# ── 1C value type discriminator bytes (_Fld{N}_Type) ────────────────────
+# These are the standard 1C value type codes used in _Type columns.
+# When a typed field can hold multiple value types, _Type byte selects
+# which type the actual value is.
+# See: 1C:Enterprise Developer Guide, "ValueType" concept
 
-DB_DIALECT: dict[str, str] = {
-    "MessageCenter": "postgresql",
-    "test": "postgresql",
+TYPE_DISCRIMINATOR_MAP: dict[int, str] = {
+    0x00: "Undefined",
+    0x01: "String",
+    0x02: "Number",
+    0x03: "Date",
+    0x04: "Boolean",
+    0x05: "BinaryData",
+    0x06: "ValueStorage",
+    0x07: "UUID",
+    0x08: "Reference (Catalog/Document/etc.)",
+    0x09: "Object (any)",
+    0x0A: "UniqueIdentifier",
+    0x0B: "FixedArray",
+    0x0C: "FixedStructure",
+    0x0D: "FixedMap",
+    0x0E: "Array",
+    0x0F: "Structure",
+    0x10: "Map",
+    0x11: "List",
+    0x12: "ValueTable",
+    0x13: "ValueTree",
+    0x14: "ValueTableRow",
+    0x15: "TabularDocument",
+    0x16: "SpreadsheetDocument",
+    0x17: "GraphicScheme",
+    0x18: "GeographicalScheme",
+    0x19: "Chart",
+    0x1A: "HTTPConnection",
+    0x1B: "FTPConnection",
+    0x1C: "MailProfile",
+    0x1D: "Picture",
+    0x1E: "BinData",
+    0x1F: "TextDocument",
+    0x20: "XDTOValueType",
 }
+
+# Type codes 0x08 refers to a "Reference" — the specific table is
+# determined by the _RTRef companion column's table suffix.

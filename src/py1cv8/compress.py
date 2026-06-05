@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import zlib
 
-import chardet
+from charset_normalizer import from_bytes
 
 # ── Decompression ──────────────────────────────────────────────────────────
 
@@ -32,20 +32,25 @@ def try_decompress(data: bytes) -> bytes | None:
 # ── Encoding detection ─────────────────────────────────────────────────────
 
 ENCODING_ORDER: tuple[str, ...] = (
-    "utf-8", "utf-16-le", "utf-16-be", "cp1251",
-    "koi8-r", "koi8-u", "windows-1251",
+    "utf-8",
+    "utf-16-le",
+    "utf-16-be",
+    "cp1251",
+    "koi8-r",
+    "koi8-u",
+    "windows-1251",
 )
 
 
 def decode_blob_chunk(chunk: bytes) -> str | None:
-    """Decode a blob chunk using chardet + fallback encoding scoring."""
+    """Decode a blob chunk using charset detection + fallback scoring."""
     data = chunk.lstrip(b"\xef\xbb\xbf")
     if len(data) < 4:
         return None
 
-    detected = chardet.detect(data[:10000])
-    hint_enc = detected.get("encoding")
-    hint_conf = detected.get("confidence", 0)
+    result = from_bytes(data[:10000]).best()
+    hint_enc = result.encoding if result else None
+    hint_conf = (1.0 if result else 0)
 
     if hint_conf > 0.5 and hint_enc:
         enc_order = (hint_enc.lower(),) + ENCODING_ORDER
@@ -78,9 +83,9 @@ def decode_blob_chunk(chunk: bytes) -> str | None:
             best_txt = txt
             best_has_keywords = True
         elif not best_txt:
-            printable_ratio = sum(
-                1 for c in txt[:500] if c.isprintable() or c.isspace()
-            ) / max(len(txt[:500]), 1)
+            printable_ratio = sum(1 for c in txt[:500] if c.isprintable() or c.isspace()) / max(
+                len(txt[:500]), 1
+            )
             if printable_ratio > 0.85:
                 best_txt = txt
 
@@ -114,9 +119,13 @@ def extract_code_blocks(dec: bytes) -> list[str]:
             continue
 
         has_code = any(
-            kw in block for kw in (
-                "Процедура ", "Функция ",
-                "КонецПроцедуры", "КонецФункции",
+            kw in block
+            for kw in (
+                "Перем",
+                "Процедура ",
+                "Функция ",
+                "КонецПроцедуры",
+                "КонецФункции",
             )
         )
         if not has_code or len(block.strip()) < 20:
@@ -128,7 +137,7 @@ def extract_code_blocks(dec: bytes) -> list[str]:
         for kw in ("КонецПроцедуры", "КонецФункции"):
             idx = code.rfind(kw)
             if idx >= 0:
-                after = code[idx + len(kw):].strip()
+                after = code[idx + len(kw) :].strip()
                 if after and not after.startswith("\n"):
                     code = code[: idx + len(kw)]
 
