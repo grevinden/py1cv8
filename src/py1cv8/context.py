@@ -16,7 +16,7 @@ from py1cv8.blob.decompress import decode_blob_chunk, try_decompress
 from py1cv8.db import get_session
 from py1cv8.dbnames import generate_db_name, parse_dbnames_text
 from py1cv8.metadata_binary import TYPE_MAP, build_metadata_map
-from py1cv8.models import Params
+from py1cv8.sql.orm.models import Params
 
 DBNAMES_RULES: str = """\
 # 1C Table naming conventions
@@ -83,8 +83,16 @@ It identifies the 1C metadata object category for serialization.
 """
 
 
-def build_llm_context(db_url: str) -> dict:
+def build_llm_context(db_url: str, *, table: str = "config") -> dict:
     """Build LLM context from a live 1C database.
+
+    Parameters
+    ----------
+    db_url : str
+        URL подключения к БД.
+    table : str
+        Таблица-источник метаданных: ``"config"`` (текущая),
+        ``"configcas"`` (кэш), ``"configsave"`` (предыдущая версия).
 
     Steps:
       1. Parse db_url -> (base_url, dbname)
@@ -99,7 +107,7 @@ def build_llm_context(db_url: str) -> dict:
         raise ValueError(f"Database URL must include a path (database name): {db_url}")
     dbname = path.rsplit("/", 1)[-1]
 
-    meta_map = build_metadata_map(dbname)
+    meta_map = build_metadata_map(dbname, table=table)
 
     # Read DBNames entries from params table for UUID -> table_name mapping
     dbnames_index: dict[str, str] = _read_dbnames_index(dbname)

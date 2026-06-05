@@ -1,4 +1,21 @@
-"""Find metadata objects by keyword in tech_name or display_names."""
+"""Поиск объектов метаданных 1С по ключевому слову в имени или синониме.
+
+Модуль реализует поиск объектов метаданных конфигурации 1С (справочников,
+документов, регистров, обработок и т.д.) по текстовому ключевому слову.
+Поиск выполняется в два этапа: сначала точное подстроковое совпадение
+в техническом имени (tech_name) или синонимах (display_names), затем
+нечёткое сравнение (fuzzy matching) через difflib.get_close_matches.
+
+Использует build_llm_context для получения полного списка объектов
+метаданных, избегая дублирования логики парсинга блобов и DBNames.
+
+Пример использования:
+    from py1cv8.find_objects import find_objects
+
+    results = find_objects("postgresql://user:pass@host/db", "Товары")
+    for obj in results:
+        print(obj["tech_name"], obj.get("display_names", {}).get("ru"))
+"""
 
 from __future__ import annotations
 
@@ -12,12 +29,40 @@ def find_objects(
     keyword: str,
     limit: int = 50,
 ) -> list[dict]:
-    """Search metadata objects whose tech_name or display_name contains *keyword*.
+    """Поиск объектов метаданных, содержащих ключевое слово в имени или синониме.
 
-    Uses substring matching first, then falls back to fuzzy matching
-    (difflib.get_close_matches) if fewer than *limit* results are found.
+    Выполняет поиск в два этапа:
+    1. Подстроковое совпадение (case-insensitive) — ищет keyword в tech_name
+       и во всех display_names каждого объекта.
+    2. Нечёткое совпадение (fuzzy) — если после этапа 1 осталось место
+       до лимита, применяет difflib.get_close_matches с порогом 0.6.
 
-    Returns filtered list of object dicts (same schema as ``context`` output).
+    Результаты дедуплицируются по UUID: каждый объект попадает в вывод
+    только один раз, даже если совпадение найдено в нескольких полях.
+
+    Args:
+        db_url: SQLAlchemy URL подключения к базе данных 1С
+            (например, postgresql://user:password@host:5432/database).
+        keyword: Ключевое слово для поиска. Регистр не учитывается.
+        limit: Максимальное количество возвращаемых объектов (по умолчанию 50).
+            Если установлено в 0, возвращаются все найденные совпадения.
+
+    Returns:
+        Список словарей с найденными объектами метаданных. Каждый словарь
+        содержит те же поля, что и вывод context: uuid, tech_name,
+        display_names, type_num, category, table_name и т.д.
+        Результаты отсортированы по релевантности: сначала точные
+        подстроковые совпадения, затем нечёткие.
+
+    Raises:
+        SQLAlchemyError: При проблемах подключения к базе данных.
+
+    Example:
+        >>> objs = find_objects("postgresql://user:pass@localhost/db", "Счёт")
+        >>> len(objs)
+        3
+        >>> objs[0]["tech_name"]
+        'Счета'
     """
     ctx = build_llm_context(db_url)
     keyword_lower = keyword.lower()

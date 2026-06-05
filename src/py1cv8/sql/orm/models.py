@@ -35,6 +35,19 @@ class ConfigCas(Base):
     binarydata: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 
 
+class ConfigSave(Base):
+    """Таблица ``configsave`` — предыдущая версия конфигурации (до применения изменений).
+
+    Имеет ту же структуру, что и ``config``: filename, partno, binarydata.
+    """
+
+    __tablename__ = "configsave"
+
+    filename: Mapped[str] = mapped_column(String, primary_key=True)
+    partno: Mapped[int] = mapped_column(Integer, primary_key=True)
+    binarydata: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+
+
 class Params(Base):
     """Таблица ``params`` — хранит DBNames и параметры конфигурации."""
 

@@ -1,4 +1,34 @@
-"""Combine context + schema + blob + sample data for a single UUID."""
+"""Полное описание объекта 1С: метаданные + схема + blob + семплы данных.
+
+Модуль-оркестратор, который для заданного UUID собирает все доступные
+сведения об объекте конфигурации 1С:
+
+1. **Метаданные** — техническое имя, отображаемые названия, type_num,
+   категория, таблица из DBNames (через build_llm_context).
+2. **Схема таблицы** — колонки, типы данных, nullable (через
+   information_schema.columns).
+3. **Описания колонок** — человекочитаемые подписи для стандартных
+   и пользовательских полей с декодированием _RTRef-ссылок.
+4. **Семплы данных** — до N строк из таблицы с форматированием
+   и разрешением ссылок.
+5. **Блоб метаданных** — сырое бинарное содержимое из config/configcas.
+
+Также предоставляет функцию describe_text для форматирования
+результата в читаемый текст.
+
+Ответственность (SRP): оркестрация сбора и форматирования данных.
+Декомпозиция вынесена во вспомогательные функции модуля.
+
+Пример использования:
+    >>> import asyncio
+    >>> from py1cv8.describe_object import describe_object, describe_text
+    >>> info = await describe_object("postgresql://...",
+    ...     "9c270050-b666-dffa-11f1-46fd81c23ada")
+    >>> info["tech_name"]
+    'Справочник.Контрагенты'
+    >>> info["table_name"]
+    '_Reference117'
+"""
 
 from __future__ import annotations
 
@@ -44,7 +74,14 @@ STANDARD_COLUMNS: dict[str, str] = {
 
 
 def _is_postgres(db_url: str) -> bool:
-    """Return True if db_url points to a PostgreSQL database."""
+    """Определить, является ли БД PostgreSQL по URL подключения.
+
+    Args:
+        db_url: URL подключения к БД.
+
+    Returns:
+        True, если URL содержит 'postgresql' или 'postgres'.
+    """
     return "postgresql" in db_url or "postgres" in db_url
 
 
@@ -52,7 +89,23 @@ def _get_column_descriptions(
     schema: list[dict],
     rtref_targets: dict[str, dict] | None = None,
 ) -> dict[str, str]:
-    """Build {column_name: description} map from known columns + _rtref targets."""
+    """Построить словарь {имя_колонки: описание} на основе известных шаблонов и _RTRef.
+
+    Для каждой колонки из схемы определяется её семантика:
+    - Стандартные колонки (_idrref, _description, _code и др.) получают
+      описания из словаря STANDARD_COLUMNS.
+    - Колонки _rtref получают пометку о типизированной ссылке и,
+      если доступны rtref_targets, конкретную таблицу назначения.
+    - Колонки _type отмечаются как дискриминаторы типа.
+    - Пользовательские поля _fld{NN} нумеруются.
+
+    Args:
+        schema: Список словарей с информацией о колонках (из _get_table_schema).
+        rtref_targets: Результат _decode_rtref_values — карта {колонка: {table_info}}.
+
+    Returns:
+        Словарь {column_name: human_readable_description}.
+    """
     result: dict[str, str] = {}
     for col in schema:
         name = col["column_name"]
@@ -91,7 +144,16 @@ def _get_column_descriptions(
 
 
 def _get_table_schema(db_url: str, table_name: str) -> list[dict]:
-    """Get column info from information_schema."""
+    """Получить метаданные колонок таблицы через information_schema.
+
+    Args:
+        db_url: URL подключения к БД.
+        table_name: Имя таблицы (регистронезависимое).
+
+    Returns:
+        Список словарей с колонками: column_name, data_type, is_nullable,
+        character_maximum_length, ordinal_position.
+    """
     engine = create_engine(
         db_url,
         pool_pre_ping=True,
@@ -124,10 +186,22 @@ def _get_sample_data(
     table_name: str,
     limit: int = 3,
 ) -> list[dict[str, Any]]:
-    """Get sample rows from *table_name*.
+    """Получить семплы строк из таблицы для наглядного просмотра данных.
 
-    Probes for an orderable column (``_idrref`` → ``_period`` → ``_recordkey``
-    → ``_key`` → ``_number`` → first column) to get deterministic rows.
+    Для получения детерминированных строк пытается найти подходящую
+    колонку для сортировки в следующем порядке приоритета:
+    _idrref → _period → _recordkey → _datakey → _key → _number → _lineno.
+    Если ни одна не найдена, использует первую колонку таблицы.
+    Если колонок нет — без сортировки (просто LIMIT).
+
+    Args:
+        db_url: URL подключения к БД.
+        table_name: Имя таблицы для выборки.
+        limit: Максимальное количество строк (по умолчанию 3).
+
+    Returns:
+        Список словарей {column_name: value} с данными строк.
+        Может быть пустым, если таблица пуста.
     """
     engine = create_engine(
         db_url,
@@ -180,10 +254,21 @@ def _decode_rtref_values(
     sample_rows: list[dict],
     context: dict,
 ) -> dict[str, dict]:
-    """Scan sample rows for _rtref columns, decode first non-zero value.
+    """Просмотреть семплы данных и декодировать первые ненулевые _RTRef-значения.
 
-    Only processes columns ending with ``_rtref`` (typed references).
-    Returns {column_name: {table_suffix, table_name, tech_name, category}}.
+    Для каждой колонки, оканчивающейся на '_rtref', сканирует строки
+    семплов в поиске первого ненулевого значения. Декодирует номер таблицы
+    (первые 4 байта как uint32 BE) и, используя контекст метаданных,
+    находит имя таблицы, техническое имя и категорию.
+
+    Args:
+        sample_rows: Семплы строк из _get_sample_data.
+        context: Контекст LLM (build_llm_context) для разрешения
+                 номера таблицы в человекочитаемые имена.
+
+    Returns:
+        Словарь {column_name: {table_suffix, table_name, tech_name, category}}.
+        Пустой, если семплы пусты или _rtref-колонок нет.
     """
     targets: dict[str, dict] = {}
     if not sample_rows:
@@ -225,11 +310,24 @@ def _summarise_value(
     rtref_targets: dict | None = None,
     resolve_map: dict[str, dict] | None = None,
 ) -> str:
-    """Short printable summary of a cell value.
+    """Сформировать краткое текстовое представление значения ячейки.
 
-    For _rtref columns, decode and show the target table.
-    For _type columns, show the type discriminator meaning.
-    If *resolve_map* is provided, known UUIDs are shown with resolved names.
+    Логика форматирования:
+    - None → 'NULL'
+    - _rtref-колонки → '→ Table #N (table_name)'
+    - _type-колонки → '0xNN = Имя_типа' (через TYPE_DISCRIMINATOR_MAP)
+    - 16-байтовые значения → UUID, с разрешением через resolve_map
+    - bytes > 80 → '<N bytes>'
+    - строки > 80 → обрезаются до 77 + '...'
+
+    Args:
+        val: Значение ячейки (любой тип).
+        col_name: Имя колонки для контекстного форматирования.
+        rtref_targets: Карта _RTRef-декодирований (из _decode_rtref_values).
+        resolve_map: Карта {uuid: resolved_info} для разрешения ссылок.
+
+    Returns:
+        Краткая строка с человекочитаемым представлением значения.
     """
     if val is None:
         return "NULL"
@@ -269,7 +367,22 @@ def _build_resolve_map(
     sample_rows: list[dict],
     rtref_targets: dict[str, dict],
 ) -> dict[str, dict]:
-    """Build a map of uuid → resolved info for all UUID values in sample data."""
+    """Построить карту UUID → разрешённые данные для всех UUID в семплах.
+
+    Обходит все колонки всех строк семплов, собирает уникальные
+    16-байтовые значения (потенциальные UUID) и разрешает их через
+    resolve_uuid. Для _rtref-колонок использует известную таблицу
+    назначения для ускорения поиска.
+
+    Args:
+        db_url: URL подключения к БД.
+        sample_rows: Семплы строк из _get_sample_data.
+        rtref_targets: Карта _RTRef-декодирований (из _decode_rtref_values).
+
+    Returns:
+        Словарь {str(uuid): resolved_info_dict}.
+        Пустой, если семплы пусты или UUID не найдены.
+    """
     resolve_map: dict[str, dict] = {}
     if not sample_rows:
         return resolve_map
@@ -315,10 +428,41 @@ async def describe_object(
     resolve_refs: bool = False,
     no_blob: bool = False,
 ) -> dict:
-    """Build a full description dict for *uuid_str*.
+    """Собрать полное описание объекта 1С по UUID.
 
-    Returns dict with keys: uuid, tech_name, table_name, schema,
-    column_descriptions, sample_data, blob.
+    Асинхронная функция-оркестратор, выполняющая последовательно:
+    1. Поиск объекта в метаданных через build_llm_context.
+    2. Если не найден — fallback через resolve_uuid по таблицам данных.
+    3. Получение схемы таблицы (information_schema).
+    4. Получение семплов данных (до sample_limit строк).
+    5. Декодирование _RTRef-ссылок в семплах.
+    6. Разрешение UUID-ссылок (если resolve_refs=True).
+    7. Построение описаний колонок.
+    8. Форматирование семплов с разрешением ссылок.
+    9. Определение дискриминаторов типов (_type колонки).
+    10. Извлечение блоба из config/configcas (если no_blob=False).
+
+    Args:
+        db_url: URL подключения к БД.
+        uuid_str: UUID объекта в любом формате.
+        sample_limit: Максимальное количество строк семплов (по умолчанию 3).
+        resolve_refs: Разрешать UUID-ссылки в семплах (замедляет работу).
+        no_blob: Не извлекать блоб метаданных (экономит время).
+
+    Returns:
+        Словарь с ключами:
+          - uuid — отформатированный UUID.
+          - tech_name — техническое имя объекта.
+          - display_names — отображаемые имена по языкам.
+          - type_num — числовой код типа.
+          - category — категория объекта (Справочник, Документ...).
+          - table_name — имя таблицы данных.
+          - schema — список колонок (если таблица есть).
+          - column_descriptions — описания колонок.
+          - sample_data — отформатированные семплы строк.
+          - type_discriminators — значения дискриминаторов типов (если есть).
+          - blob — сырое содержимое блоба (если no_blob=False и blob найден).
+          - error — сообщение об ошибке (если объект не найден).
     """
     ctx = build_llm_context(db_url)
 
@@ -436,7 +580,24 @@ async def describe_text(
     resolve_refs: bool = False,
     no_blob: bool = False,
 ) -> str:
-    """Human-readable text description of a 1C metadata object."""
+    """Сформировать человекочитаемое текстовое описание объекта 1С по UUID.
+
+    Вызывает describe_object и форматирует результат в многострочный
+    текст с секциями: заголовок UUID, техническое имя, отображаемые
+    имена, категория, таблица, схема колонок с описаниями, значения
+    дискриминаторов типов, семплы данных, содержимое блоба.
+
+    Args:
+        db_url: URL подключения к БД.
+        uuid_str: UUID объекта.
+        sample_limit: Максимальное количество строк семплов.
+        resolve_refs: Разрешать UUID-ссылки.
+        no_blob: Не включать блоб метаданных.
+
+    Returns:
+        Многострочная строка с форматированным описанием.
+        При ошибке возвращает 'ERROR: {сообщение}'.
+    """
     info = await describe_object(
         db_url,
         uuid_str,

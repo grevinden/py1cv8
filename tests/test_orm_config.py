@@ -1,7 +1,10 @@
 """Tests for py1cv8.sql.orm.config_queries — model resolution and type safety."""
 
+from typing import cast
+
 import pytest
 
+from py1cv8.sql.orm import ConfigTable
 from py1cv8.sql.orm.config_queries import _resolve_model
 from py1cv8.sql.orm.models import Config, ConfigCas
 
@@ -18,11 +21,11 @@ class TestResolveModel:
     def test_unknown_table_raises(self):
         with pytest.raises(ValueError, match="Unknown table"):
             # Literal not enforced at runtime — test the ValueError path
-            _resolve_model("params")  # type: ignore[arg-type]
+            _resolve_model(cast(ConfigTable, "params"))
 
     def test_empty_string_raises(self):
         with pytest.raises(ValueError, match="Unknown table"):
-            _resolve_model("")  # type: ignore[arg-type]
+            _resolve_model(cast(ConfigTable, ""))
 
 
 class TestConfigQueriesValidateUrlIntegration:

@@ -1,16 +1,23 @@
-"""1C XSD type enums — embedded from platform XSD schemas.
+"""Перечисления (enum) XSD-типов платформы 1С:Enterprise.
 
-Single responsibility: provide all 1C simpleType enumerations as Python
-``StrEnum`` classes + a text description registry for LLM (Type Bridge).
+Единственная ответственность: предоставить все перечисления (simpleType)
+из XSD-схем 1С в виде Python-классов ``StrEnum``, а также реестр
+текстовых описаний для LLM (Type Bridge).
 
-All enum data is embedded (extracted from 1C 8.3.27 XSD files) —
-zero external file dependencies.
+Данные перечислений встроены непосредственно в модуль (извлечены из
+XSD-файлов платформы 1С 8.3.27) — нулевая зависимость от внешних файлов.
+
+Модуль также содержит:
+  - ``TYPE_DISCRIMINATOR_MAP`` — карту дискриминаторов типов значений
+    (байты ``_Fld{N}_Type``).
+  - ``METADATA_TYPES`` — реестр UUID типов объектов метаданных 1С
+    (из v8unpack MetaDataTypes).
 """
 
 from __future__ import annotations
 
 import enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -449,11 +456,34 @@ _ENUM_REGISTRY: dict[str, type[enum.StrEnum]] = {}
 
 
 def _make_enum(name: str, values: Sequence[str]) -> type[enum.StrEnum]:
+    """Динамическое создание класса-перечисления StrEnum.
+
+    Каждое значение из переданного списка становится одновременно
+    и именем элемента, и его строковым значением.
+
+    Args:
+        name: Имя создаваемого класса-перечисления.
+        values: Последовательность строковых значений, из которых
+            будут сформированы элементы перечисления.
+
+    Returns:
+        Класс ``StrEnum`` с указанными элементами.
+    """
     members: dict[str, str] = {v: v for v in values}
-    return enum.StrEnum(name, members)  # type: ignore[return-value]
+    return cast(type[enum.StrEnum], enum.StrEnum(name, members))
 
 
 def _load_all() -> None:
+    """Ленивая загрузка всех перечислений из ``_ENUM_DATA`` в ``_ENUM_REGISTRY``.
+
+    Вызывает ``_make_enum`` для каждой записи в ``_ENUM_DATA`` и сохраняет
+    результат в глобальном реестре ``_ENUM_REGISTRY``. Повторные вызовы
+    игнорируются — реестр уже заполнен, функция завершается досрочно.
+
+    Всего загружается 114 классов-перечислений, встроенных непосредственно
+    в модуль. При первом вызове любой публичной функции (``get_enum``,
+    ``get_enum_values`` и т.д.) эта функция вызывается автоматически.
+    """
     if _ENUM_REGISTRY:
         return
     for name, values in _ENUM_DATA.items():
@@ -464,21 +494,66 @@ def _load_all() -> None:
 
 
 def get_enum(name: str) -> type[enum.StrEnum] | None:
+    """Получение класса-перечисления по его имени.
+
+    Обеспечивает ленивую загрузку: при первом обращении все перечисления
+    загружаются в реестр автоматически.
+
+    Args:
+        name: Имя перечисления (например, ``"CatalogCodeType"``,
+            ``"DocumentNumberPeriodicity"``).
+
+    Returns:
+        Класс ``StrEnum`` с элементами перечисления или None,
+        если перечисление с таким именем не найдено.
+    """
     _load_all()
     return _ENUM_REGISTRY.get(name)
 
 
 def get_enum_values(name: str) -> list[str] | None:
+    """Получение списка строковых значений перечисления по его имени.
+
+    В отличие от ``get_enum``, возвращает сырые данные из ``_ENUM_DATA``
+    без создания класса-перечисления. Это легковесная альтернатива,
+    когда нужен только список значений, а не полноценный enum-класс.
+
+    Args:
+        name: Имя перечисления.
+
+    Returns:
+        Список строковых значений перечисления или None,
+        если перечисление с таким именем не найдено.
+    """
     _load_all()
     return _ENUM_DATA.get(name)
 
 
 def get_all_enum_names() -> list[str]:
+    """Получение отсортированного списка имён всех доступных перечислений.
+
+    Returns:
+        Отсортированный по алфавиту список строк — имён перечислений.
+    """
     _load_all()
     return sorted(_ENUM_REGISTRY)
 
 
 def describe_enum(name: str, indent: str = "") -> str:
+    """Форматирование текстового описания одного перечисления для LLM.
+
+    Используется в ``describe_all_enums`` для построения сводки
+    по всем перечислениям. Формат вывода оптимизирован для включения
+    в контекст, передаваемый LLM (Type Bridge).
+
+    Args:
+        name: Имя перечисления.
+        indent: Отступ (строка пробелов), добавляемый перед выводом.
+
+    Returns:
+        Строка вида ``{indent}{name}: {val1}, {val2}, ...`` или
+        ``{indent}{name}: (unknown)``, если перечисление не найдено.
+    """
     values = get_enum_values(name)
     if values is None:
         return f"{indent}{name}: (unknown)"
@@ -486,11 +561,29 @@ def describe_enum(name: str, indent: str = "") -> str:
 
 
 def describe_all_enums(indent: str = "") -> str:
+    """Форматирование текстовых описаний всех перечислений для LLM.
+
+    Каждое перечисление выводится на отдельной строке в формате
+    ``describe_enum``. Результат пригоден для включения в контекст,
+    передаваемый нейросети для анализа схемы данных 1С.
+
+    Args:
+        indent: Отступ (строка пробелов), добавляемый перед каждым выводом.
+
+    Returns:
+        Многострочная строка с описаниями всех зарегистрированных
+        перечислений, разделённых символами новой строки.
+    """
     _load_all()
     return "\n".join(describe_enum(name, indent) for name in sorted(_ENUM_REGISTRY))
 
 
 def enum_summary() -> dict[str, int]:
+    """Краткая сводка: имена перечислений и количество значений в каждом.
+
+    Returns:
+        Словарь вида ``{имя_перечисления: количество_значений}``.
+    """
     return {n: len(v) for n, v in _ENUM_DATA.items()}
 
 
@@ -534,6 +627,18 @@ _WELL_KNOWN = [
 
 
 def _init_aliases() -> None:
+    """Инициализация глобальных псевдонимов для часто используемых перечислений.
+
+    Загружает все перечисления (через ``_load_all``), затем для каждого
+    имени из списка ``_WELL_KNOWN`` устанавливает одноимённую глобальную
+    переменную модуля, равную соответствующему классу ``StrEnum`` из реестра.
+
+    Это позволяет обращаться к наиболее часто используемым перечислениям
+    напрямую: ``type_enums.TypeCategories`` вместо
+    ``type_enums.get_enum("TypeCategories")``.
+
+    Вызывается автоматически при импорте модуля (в конце файла).
+    """
     _load_all()
     g = globals()
     for name in _WELL_KNOWN:

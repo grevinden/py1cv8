@@ -10,19 +10,21 @@ from typing import Any, Literal, cast
 from sqlalchemy import select
 
 from py1cv8.sql.orm.engine import get_async_session
-from py1cv8.sql.orm.models import Config, ConfigCas
+from py1cv8.sql.orm.models import Config, ConfigCas, ConfigSave
 from py1cv8.sql.types import get_db_name, validate_db_url
 
-ConfigTable = Literal["config", "configcas"]
+ConfigTable = Literal["config", "configcas", "configsave"]
 
 
-def _resolve_model(table: ConfigTable) -> type[Config | ConfigCas]:
+def _resolve_model(table: ConfigTable) -> type[Config | ConfigCas | ConfigSave]:
     """Вернуть ORM-модель для указанной таблицы."""
     if table == "config":
         return Config
     if table == "configcas":
         return ConfigCas
-    raise ValueError(f"Unknown table: {table!r}. Choose from: config, configcas")
+    if table == "configsave":
+        return ConfigSave
+    raise ValueError(f"Unknown table: {table!r}. Choose from: config, configcas, configsave")
 
 
 async def select_config_rows(
@@ -42,7 +44,7 @@ async def select_config_rows(
     ----------
     db_url : str
         URL подключения к БД (SQLAlchemy). Валидируется автоматически.
-    table : Literal["config", "configcas"]
+    table : Literal["config", "configcas", "configsave"]
     filename : str, optional
         Паттерн ILIKE для фильтрации имени файла.
     partno : int, optional
@@ -80,7 +82,7 @@ async def select_config_rows(
 
         result = await session.execute(stmt)
         rows = cast(
-            list[Config | ConfigCas],
+            list[Config | ConfigCas | ConfigSave],
             result.scalars().all(),
         )
 

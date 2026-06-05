@@ -1,7 +1,32 @@
-"""Relationship graph for 1C metadata objects.
+"""Граф связей для объектов метаданных 1С.
 
-Shows how objects reference each other using metadata-level names
-instead of raw SQL column names.
+Модуль строит ориентированный граф отношений между объектами
+конфигурации 1С: кто кому принадлежит (owner), кто родитель (parent),
+на какие таблицы ссылаются поля _Fld{N}RRef и _Fld{N}RTRef, какие
+тип-дискриминаторы используются, а также обратные ссылки (какие
+объекты ссылаются на данный).
+
+Все результаты отображаются человекочитаемыми именами полей
+(из бинарных блобов метаданных) вместо технических _fld{N}rref.
+
+Основные функции:
+    - build_graph: построить граф для одного UUID
+    - graph_mermaid: сгенерировать Mermaid classDiagram для одного объекта
+    - graph_text: человекочитаемое текстовое описание графа
+    - build_global_graph: построить граф для ВСЕХ объектов
+    - graph_all_mermaid / graph_all_text: глобальный граф в разных форматах
+
+Вспомогательные функции:
+    - _resolve_from_table_suffix: поиск объекта по номеру таблицы
+    - _extract_field_names: извлечение имён полей из блоба
+    - _compute_fld_positions: маппинг _fld{N} → позиция
+    - _build_reference_columns: сбор референсных колонок
+    - _has_owneridrref / _has_parentidrref: проверка наличия колонок
+    - _find_type_columns: поиск и декодирование тип-дискриминаторов
+    - _resolve_uuid_against_tables: поиск UUID во всех таблицах
+    - _find_reverse_rtref: поиск обратных RTRef-ссылок
+    - _sample_rref_uuids: сэмплирование RRef-ссылок
+    - _sample_rtref_targets: определение целевых таблиц RTRef
 """
 
 from __future__ import annotations
@@ -25,6 +50,21 @@ from py1cv8.type_enums import TYPE_DISCRIMINATOR_MAP
 
 
 def _resolve_from_table_suffix(suffix: int, ctx: dict) -> dict | None:
+    """Найти объект метаданных по числовому суффиксу таблицы.
+
+    Извлекает числовой суффикс из имени таблицы (например, 53 из
+    "_Reference53") и сравнивает с переданным значением. Если объект
+    найден — возвращает словарь с информацией о нём.
+
+    Args:
+        suffix: Числовой суффикс таблицы (например, 53 для _Reference53).
+        ctx: Контекст метаданных, полученный через build_llm_context().
+            Ожидается наличие ключа "objects" со списком объектов.
+
+    Returns:
+        Словарь с ключами table_name, tech_name, category, uuid,
+        display_names, type_num или None, если объект не найден.
+    """
     for obj in ctx["objects"]:
         tn = obj.get("table_name")
         if tn:
@@ -42,12 +82,23 @@ def _resolve_from_table_suffix(suffix: int, ctx: dict) -> dict | None:
 
 
 def _extract_field_names(blob_content: str) -> list[str]:
-    """Extract ordered field names from a metadata blob.
+    """Извлечь упорядоченный список имён полей из блоба метаданных.
 
-    Skips the first ``{1,0,OBJ_UUID},"Name"`` (the object itself).
-    Returns subsequent field names in order.
+    Парсит текстовое содержимое блоба, находя паттерн
+    {1,0,UUID},"FieldName" и извлекая имена полей. Первый элемент
+    пропускается — это заголовок самого объекта (его UUID и tech_name).
 
-    Tolerates optional whitespace between brace, comma and quotes.
+    Args:
+        blob_content: Текстовое содержимое блоба метаданных
+            (первые ~50000 символов после декомпрессии).
+
+    Returns:
+        Список имён полей в порядке их объявления в метаданных.
+        Если полей нет — пустой список.
+
+    Пример:
+        >>> _extract_field_names('... {1,0,UUID},"Name" ... {1,0,UUID},"Code" ...')
+        ['Code', 'Description']
     """
     matches = re.findall(
         r'\{1,0\s*,\s*[^}]+\}\s*,\s*"([^"]+)"',
@@ -57,12 +108,29 @@ def _extract_field_names(blob_content: str) -> list[str]:
 
 
 def _compute_fld_positions(schema_columns: list[dict]) -> dict[str, int]:
-    """Map each _fld{N} column name to its field-name index.
+    """Построить маппинг имён колонок _fld{N} на индексы полей.
 
-    Extracts the field number from each column name. Variant columns
-    (_fld{N}rref, _fld{N}rtref, _fld{N}_TYPE etc.) that share the same
-    field number are deduplicated — all map to the same index determined
-    by the first occurrence of that field number in the table.
+    Извлекает номер поля из имени каждой колонки. Колонки-варианты
+    одного поля (_fld{N}RRef, _fld{N}RTRef, _fld{N}_TYPE и т.д.)
+    группируются по номеру поля — все они получают один и тот же
+    индекс, соответствующий первой встреченной колонке с этим номером.
+
+    Args:
+        schema_columns: Список словарей с описанием колонок таблицы,
+            каждый должен содержать ключ "column_name".
+
+    Returns:
+        Словарь {имя_колонки: индекс_поля}. Индексы назначаются
+        последовательно, начиная с 0, в порядке возрастания номеров
+        полей в таблице.
+
+    Пример:
+        >>> _compute_fld_positions([
+        ...     {"column_name": "_Fld1RRef"},
+        ...     {"column_name": "_Fld1RTRef"},
+        ...     {"column_name": "_Fld2"},
+        ... ])
+        {'_Fld1RRef': 0, '_Fld1RTRef': 0, '_Fld2': 1}
     """
     fld_re = re.compile(r"_fld(\d+)", re.IGNORECASE)
     positions: dict[str, int] = {}
@@ -86,16 +154,29 @@ async def _build_reference_columns(
     obj_uuid: str,
     field_names: list[str] | None = None,
 ) -> list[dict]:
-    """Build list of reference columns with metadata field names.
+    """Построить список референсных колонок с human-readable именами полей.
 
-    Maps ``_rref`` / ``_rtref`` columns to blob field names by
-    positional order among reference columns.
+    Собирает все колонки таблицы, являющиеся ссылками (_RRef и _RTRef),
+    и сопоставляет каждой из них человекочитаемое имя поля из блоба
+    метаданных. Сопоставление происходит по позиции колонки среди
+    всех референсных колонок.
 
-    Parameters
-    ----------
-    field_names
-        Pre-extracted field names from the blob (avoids double-fetch).
-        If None, fetches and extracts from the blob.
+    Пропускает системную колонку _IDRRef — она присутствует в каждой
+    таблице и не является ссылочным полем объекта.
+
+    Args:
+        db_url: Строка подключения к базе данных.
+        table_name: Имя таблицы, для которой собираются референсные колонки.
+        obj_uuid: UUID объекта метаданных (используется для извлечения
+            блоба с именами полей, если field_names не передан).
+        field_names: Предварительно извлечённый список имён полей.
+            Если None, будет выполнен запрос к БД для получения блоба.
+
+    Returns:
+        Список словарей с ключами:
+            - column: техническое имя колонки (_Fld{N}RRef/_Fld{N}RTRef)
+            - field_name: человекочитаемое имя поля из метаданных
+            - type: "rref" для жёстких ссылок или "rtref" для типизированных
     """
     schema_columns = _get_table_schema(db_url, table_name)
 
@@ -139,19 +220,65 @@ async def _build_reference_columns(
 
 
 def _has_owneridrref(db_url: str, table_name: str) -> bool:
-    """Check if table has _owneridrref column."""
+    """Проверить, есть ли в таблице колонка _OwnerIDRRef (владелец).
+
+    Выполняет запрос схемы таблицы через _get_table_schema и проверяет
+    наличие колонки с именем, чувствительным к регистру. Наличие этой
+    колонки означает, что объект может принадлежать другому объекту
+    (например, подчинённый справочник).
+
+    Args:
+        db_url: Строка подключения к базе данных.
+        table_name: Имя таблицы для проверки.
+
+    Returns:
+        True, если колонка _OwnerIDRRef присутствует в таблице.
+    """
     schema = _get_table_schema(db_url, table_name)
     return any(c["column_name"].lower() == "_owneridrref" for c in schema)
 
 
 def _has_parentidrref(db_url: str, table_name: str) -> bool:
-    """Check if table has _parentidrref column."""
+    """Проверить, есть ли в таблице колонка _ParentIDRRef (родитель).
+
+    Выполняет запрос схемы таблицы через _get_table_schema и проверяет
+    наличие колонки с именем, чувствительным к регистру. Наличие этой
+    колонки означает, что объект поддерживает иерархию
+    (группы/элементы справочника).
+
+    Args:
+        db_url: Строка подключения к базе данных.
+        table_name: Имя таблицы для проверки.
+
+    Returns:
+        True, если колонка _ParentIDRRef присутствует в таблице.
+    """
     schema = _get_table_schema(db_url, table_name)
     return any(c["column_name"].lower() == "_parentidrref" for c in schema)
 
 
 async def _find_type_columns(db_url: str, table_name: str) -> list[dict]:
-    """Find _type columns and sample their values (async)."""
+    """Найти _TYPE-колонки в таблице и сэмплировать их значения (асинхронно).
+
+    Определяет все колонки, имена которых заканчиваются на "_type"
+    (дискриминаторы типов для ссылочных полей), и извлекает уникальные
+    значения из каждой такой колонки. Полученные hex-значения
+    декодируются в человекочитаемый тип через TYPE_DISCRIMINATOR_MAP.
+
+    Для каждого типа-дискриминатора выполняется отдельный SQL-запрос
+    через asyncio.TaskGroup для параллелизации.
+
+    Args:
+        db_url: Строка подключения к базе данных.
+        table_name: Имя таблицы для анализа.
+
+    Returns:
+        Список словарей с ключами:
+            - column: имя _TYPE колонки
+            - values: список словарей {hex, meaning} с уникальными
+              значениями типа-дискриминатора и их интерпретацией
+        Если _TYPE колонок нет — пустой список.
+    """
     schema = _get_table_schema(db_url, table_name)
     type_cols = [c for c in schema if c["column_name"].endswith("_type")]
     if not type_cols:
@@ -213,7 +340,22 @@ async def _resolve_uuid_against_tables(
     uuid_hex_std: str,
     ctx: dict,
 ) -> dict | None:
-    """Try to find *uuid_hex_std* in _IDRRef of any known table (async + TaskGroup)."""
+    """Найти UUID в _IDRRef любой известной таблицы (асинхронно + TaskGroup).
+
+    Пытается найти переданный UUID (и его 1С-вариацию через
+    _uuid_to_1c_idrref_hex) в колонке _IDRRef всех таблиц, известных
+    из контекста метаданных. Поиск выполняется параллельно через
+    asyncio.TaskGroup.
+
+    Args:
+        db_url: Строка подключения к базе данных.
+        uuid_hex_std: UUID в стандартном hex-формате (32 символа).
+        ctx: Контекст метаданных со списком объектов и их таблиц.
+
+    Returns:
+        Словарь с информацией об объекте (table_name, tech_name,
+        category, uuid, display_names), если UUID найден, иначе None.
+    """
     candidates = {uuid_hex_std}
     with suppress(Exception):
         candidates.add(_uuid_to_1c_idrref_hex(uuid_hex_std))
@@ -267,7 +409,30 @@ async def _find_reverse_rtref(
     table_suffix: int,
     ctx: dict,
 ) -> list[dict]:
-    """Find objects that have _rtref columns pointing to *table_suffix* (async + TaskGroup)."""
+    """Найти объекты, чьи _RTRef колонки ссылаются на указанную таблицу.
+
+    Для каждого объекта метаданных, имеющего таблицу, проверяет все
+    колонки _Fld{N}RTRef на наличие ссылок на переданный суффикс
+    таблицы. Поиск выполняется параллельно через asyncio.TaskGroup.
+
+    Сравнение происходит по первым 4 байтам RTRef-поля (которые
+    содержат номер таблицы в формате uint32 BE).
+
+    Args:
+        db_url: Строка подключения к базе данных.
+        table_suffix: Числовой суффикс целевой таблицы (например 53
+            для _Reference53).
+        ctx: Контекст метаданных со списком объектов.
+
+    Returns:
+        Список словарей, каждый с ключами:
+            - table_name: имя таблицы, в которой найдена ссылка
+            - tech_name: техническое имя объекта
+            - uuid: UUID объекта
+            - category: категория объекта
+            - column: имя RTRef-колонки, содержащей ссылку
+        Если обратных ссылок нет — пустой список.
+    """
     is_pg = is_postgres_url(db_url)
     dbname = get_db_name(db_url)
     suffix_bytes = struct.pack(">I", table_suffix)
@@ -332,7 +497,29 @@ async def _sample_rref_uuids(
     table_name: str,
     field_names: list[str],
 ) -> list[dict]:
-    """Scan _rref columns, sample IDs, try to resolve target tables (async + TaskGroup)."""
+    """Сэмплировать UUID из _RRef колонок и определить целевые таблицы.
+
+    Для каждой колонки _Fld{N}RRef (кроме _Fld{N}RTRef) извлекает
+    несколько уникальных значений UUID, затем пытается найти каждый
+    UUID в любой известной таблице. Если хотя бы один UUID разрешился
+    в объект метаданных — возвращает информацию о целевой таблице.
+
+    Все запросы выполняются параллельно через asyncio.TaskGroup.
+
+    Args:
+        db_url: Строка подключения к базе данных.
+        table_name: Имя таблицы для анализа.
+        field_names: Список имён полей из блоба метаданных для
+            человекочитаемого отображения.
+
+    Returns:
+        Список словарей с ключами:
+            - column: имя RRef-колонки
+            - field_name: человекочитаемое имя поля
+            - sample_uuids: найденные уникальные UUID (до 4 штук)
+            - target: словарь с информацией о целевой таблице (или None)
+        Если RRef-колонок нет — пустой список.
+    """
     schema_columns = _get_table_schema(db_url, table_name)
     rref_re = re.compile(r"_fld\d+rref$", re.IGNORECASE)
     rtref_re = re.compile(r"_fld\d+rtref$", re.IGNORECASE)
@@ -412,7 +599,31 @@ async def _sample_rtref_targets(
     field_names: list[str],
     sample_limit: int = 5,
 ) -> list[dict]:
-    """Scan _rtref columns and discover target tables from first 4 bytes (async)."""
+    """Сэмплировать _RTRef колонки и определить целевые таблицы по первым 4 байтам.
+
+    _RTRef (Typed Reference) содержит в первых 4 байтах номер
+    таблицы (uint32 BE), а в оставшихся 12 — UUID записи. Функция
+    извлекает первые байты из нескольких строк, группирует по номерам
+    таблиц и определяет, на какой объект метаданных указывает ссылка.
+
+    Args:
+        db_url: Строка подключения к базе данных.
+        table_name: Имя таблицы для анализа.
+        ctx: Контекст метаданных для резолвинга суффиксов таблиц.
+        field_names: Список имён полей из блоба метаданных.
+        sample_limit: Максимальное количество строк для сэмплирования
+            (по умолчанию 5).
+
+    Returns:
+        Список словарей с ключами:
+            - column: имя RTRef-колонки
+            - field_name: человекочитаемое имя поля
+            - table_suffix: числовой суффикс целевой таблицы
+            - sample_count: количество найденных ссылок на эту таблицу
+            - target: информация о целевом объекте (или None, если
+              суффикс не соответствует ни одному известному объекту)
+        Если RTRef-колонок нет — пустой список.
+    """
     schema_columns = _get_table_schema(db_url, table_name)
     rtref_re = re.compile(r"_fld\d+rtref$", re.IGNORECASE)
 
@@ -471,12 +682,45 @@ async def _sample_rtref_targets(
 
 
 async def build_graph(db_url: str, uuid_str: str) -> dict:
-    """Build relationship graph for the metadata object identified by *uuid_str*.
+    """Построить граф связей для объекта метаданных по его UUID.
 
-    Resolves owners, parents, reference targets, type discriminators,
-    and reverse references.
+    Центральная функция модуля. Для указанного UUID выполняет полный
+    анализ графа отношений:
+      1. Извлекает имена полей из блоба метаданных
+      2. Собирает референсные колонки (_RRef, _RTRef) с human-readable именами
+      3. Определяет владельца (Owner) через колонку _OwnerIDRRef
+      4. Определяет родителя (Parent) через колонку _ParentIDRRef
+      5. Резолвит _RTRef-ссылки: определяет, на какие таблицы они указывают
+      6. Резолвит _RRef-ссылки: находит UUID-цели во всех таблицах
+      7. Декодирует тип-дискриминаторы (_TYPE колонки)
+      8. Находит обратные _RTRef-ссылки (какие объекты ссылаются на данный)
 
-    Returns a JSON-serialisable dict.
+    Возвращает JSON-сериализуемый словарь, готовый для вывода
+    в CLI, Mermaid-диаграмму или текстовое представление.
+
+    Args:
+        db_url: Строка подключения к базе данных.
+        uuid_str: UUID объекта метаданных в любом стандартном формате
+            (с дефисами, без, с постфиксом).
+
+    Returns:
+        Словарь со следующими ключами:
+            - uuid: UUID объекта
+            - tech_name: техническое имя объекта
+            - display_names: словарь синонимов по языкам
+            - category: категория объекта (Справочник, Документ и т.д.)
+            - type_num: числовой код категории
+            - table_name: имя таблицы в БД
+            - references: список референсных колонок с именами полей
+            - owner: информация об объекте-владельце (или None)
+            - parent: информация об объекте-родителе (или None)
+            - rtref_targets: результаты резолвинга _RTRef
+            - rref_targets: результаты резолвинга _RRef
+            - type_discriminators: значения тип-дискриминаторов
+            - reverse_rtref: обратные _RTRef-ссылки
+
+        Если UUID не найден в метаданных — возвращает словарь
+        с ключом "error" и текстом ошибки.
     """
     ctx = build_llm_context(db_url)
     hex_raw = uuid_str.replace("-", "").lower()
@@ -712,10 +956,25 @@ async def build_graph(db_url: str, uuid_str: str) -> dict:
 
 
 async def graph_mermaid(db_url: str, uuid_str: str) -> str:
-    """Generate a Mermaid classDiagram for the object's relationship graph.
+    """Сгенерировать Mermaid classDiagram для графа связей объекта.
 
-    Each connected object (owner, parent, reference target) is a class.
-    Relationships show human-readable field names (not _fld{N}rref).
+    Строит визуальную диаграмму классов Mermaid, где каждый связанный
+    объект (владелец, родитель, цель ссылки) представлен отдельным
+    классом. Связи между классами подписаны человекочитаемыми именами
+    полей, а не техническими _fld{N}rref.
+
+    Типы связей в диаграмме:
+      - Наследование ("<|") — для владельца и родителя
+      - Композиция/зависимость ("<..") — для ссылочных полей
+      - Пунктирная стрелка ("..>") — для обратных ссылок
+
+    Args:
+        db_url: Строка подключения к базе данных.
+        uuid_str: UUID объекта метаданных.
+
+    Returns:
+        Строка с Mermaid-диаграммой в markdown-блоке ```mermaid...```.
+        Если объект не найден — возвращает "ERROR: {текст ошибки}".
     """
     info = await build_graph(db_url, uuid_str)
     if "error" in info:
@@ -729,7 +988,17 @@ async def graph_mermaid(db_url: str, uuid_str: str) -> str:
     tech = info.get("tech_name") or "Unknown"
 
     def _ensure_class(name: str, table: str | None, category: str | None) -> None:
-        """Add a class block if not already added."""
+        """Добавить блок класса в Mermaid-диаграмму, если ещё не добавлен.
+
+        Внутренняя функция-замыкание, работающая со списком lines
+        и множеством added из внешней области видимости. Предотвращает
+        дублирование классов в диаграмме.
+
+        Args:
+            name: Имя класса (tech_name объекта).
+            table: Имя таблицы в БД (отображается внутри блока).
+            category: Категория объекта (отображается внутри блока).
+        """
         if name and name not in added:
             added.add(name)
             lines.append("")
@@ -812,7 +1081,26 @@ async def graph_mermaid(db_url: str, uuid_str: str) -> str:
 
 
 async def graph_text(db_url: str, uuid_str: str) -> str:
-    """Human-readable text representation of the relationship graph."""
+    """Сформировать человекочитаемое текстовое описание графа связей.
+
+    Строит многострочный текст в стиле структурированного отчёта,
+    где последовательно отображаются:
+      - Основная информация: UUID, имена (RU/EN), категория, таблица
+      - Владелец (Owner), если есть
+      - Родитель (Parent), если есть
+      - Поля-ссылки с указанием типа и целевого объекта
+      - Тип-дискриминаторы с расшифровкой hex → человекочитаемый тип
+      - Обратные ссылки на данный объект
+
+    Args:
+        db_url: Строка подключения к базе данных.
+        uuid_str: UUID объекта метаданных.
+
+    Returns:
+        Многострочный текст с графом связей, готовый для вывода
+        в терминал или сохранения в файл. Если объект не найден —
+        возвращает "ERROR: {текст ошибки}".
+    """
     info = await build_graph(db_url, uuid_str)
 
     if "error" in info:
@@ -919,15 +1207,43 @@ async def graph_text(db_url: str, uuid_str: str) -> str:
 
 
 async def build_global_graph(db_url: str) -> list[dict]:
-    """Build relationship graph for ALL metadata objects with tables.
+    """Построить граф связей для ВСЕХ объектов метаданных, имеющих таблицы.
 
-    Uses TaskGroup to parallelise all ``build_graph`` calls.
+    Собирает все объекты из контекста, у которых есть table_name,
+    и параллельно запускает build_graph для каждого через
+    asyncio.TaskGroup. Ошибки отдельных объектов подавляются —
+    в результат попадают только успешно построенные графы.
+
+    Args:
+        db_url: Строка подключения к базе данных.
+
+    Returns:
+        Список словарей-графов (по одному на каждый объект с таблицей).
+        Каждый словарь имеет структуру, идентичную возвращаемой
+        build_graph. Если ни один объект не удалось обработать —
+        возвращается пустой список.
+
+    Примечание:
+        Для больших конфигураций (сотни объектов) эта функция
+        может выполняться долго из-за множества SQL-запросов.
     """
     ctx = build_llm_context(db_url)
 
     objects_with_tables = [o for o in ctx["objects"] if o.get("table_name")]
 
     async def _build_one(uuid: str) -> dict | None:
+        """Построить граф для одного UUID с обработкой ошибок.
+
+        Внутренняя вспомогательная функция для build_global_graph.
+        Вызывает build_graph и возвращает результат только если
+        нет ошибки. Любые исключения подавляются.
+
+        Args:
+            uuid: UUID объекта метаданных.
+
+        Returns:
+            Словарь-граф или None при ошибке.
+        """
         try:
             g = await build_graph(db_url, uuid)
             if "error" not in g:
@@ -948,7 +1264,22 @@ async def build_global_graph(db_url: str) -> list[dict]:
 
 
 async def graph_all_text(db_url: str) -> str:
-    """Human-readable text for the global graph."""
+    """Сформировать человекочитаемый текст полного графа связей всех объектов.
+
+    Строит многострочный отчёт по всем объектам метаданных, имеющим
+    таблицы. Для каждого объекта выводится:
+      - Техническое имя, таблица и категория
+      - Владелец (если есть)
+      - Родитель (если есть)
+      - Ссылочные поля с человекочитаемыми именами
+
+    Args:
+        db_url: Строка подключения к базе данных.
+
+    Returns:
+        Многострочный текст. Если нет объектов с таблицами —
+        возвращает "(объекты с таблицами не найдены)".
+    """
     graphs = await build_global_graph(db_url)
     if not graphs:
         return "(объекты с таблицами не найдены)"
@@ -985,7 +1316,25 @@ async def graph_all_text(db_url: str) -> str:
 
 
 async def graph_all_mermaid(db_url: str) -> str:
-    """Mermaid classDiagram for ALL objects and their relationships."""
+    """Сгенерировать Mermaid classDiagram для всех объектов и их связей.
+
+    Строит полную Mermaid-диаграмму классов, включающую все объекты
+    метаданных, имеющие таблицы. Диаграмма проходит в два прохода:
+      1. Добавление всех классов (объектов)
+      2. Добавление связей: владелец, родитель, ссылки, обратные ссылки
+
+    Args:
+        db_url: Строка подключения к базе данных.
+
+    Returns:
+        Строка с Mermaid-диаграммой в markdown-блоке. Если объектов
+        нет — возвращает заглушку с классом Error.
+
+    Примечание:
+        Для больших конфигураций диаграмма может получиться
+        очень большой — рекомендуется использовать для небольших
+        наборов объектов или фильтровать по подсистемам.
+    """
     graphs = await build_global_graph(db_url)
     if not graphs:
         return "```mermaid\nclassDiagram\n    class Error {\n        no objects\n    }\n```"
@@ -997,6 +1346,17 @@ async def graph_all_mermaid(db_url: str) -> str:
     added: set[str] = set()
 
     def _ensure_class(name: str, table: str | None, category: str | None) -> None:
+        """Добавить блок класса в глобальную Mermaid-диаграмму.
+
+        Внутренняя функция-замыкание для graph_all_mermaid. Работает
+        со списком lines и множеством added из внешней области.
+        Предотвращает дублирование классов.
+
+        Args:
+            name: Имя класса (tech_name объекта).
+            table: Имя таблицы в БД.
+            category: Категория объекта.
+        """
         if name and name not in added:
             added.add(name)
             lines.append("")

@@ -1,8 +1,20 @@
-"""BSL (1C:Enterprise) code detection and name extraction.
+"""Детекция BSL-кода (1С:Предприятие) и извлечение имён модулей из блобов.
 
-Responsibilities:
-  - BSL keyword detection
-  - Module name extraction from blob content
+Единственная ответственность (SRP):
+  - Проверка, содержит ли текст ключевые слова языка BSL (1С).
+  - Извлечение имени модуля/обработки из текстового содержимого блоба
+    (например, из распакованного кода общей формы или обработки).
+
+Не занимается:
+  - Парсингом AST или выполнением BSL-кода.
+  - Декомпрессией или извлечением блобов из БД.
+
+Пример использования:
+    >>> from py1cv8.bsl import has_bsl_keywords, extract_name_from_code
+    >>> has_bsl_keywords("Процедура Тест()\nВозврат 1;\n")
+    True
+    >>> extract_name_from_code('SomeModule.ExportMethod()')
+    (None, None)
 """
 
 from __future__ import annotations
@@ -13,17 +25,64 @@ _BSL_KEYWORDS: tuple[str, ...] = ("Процедура", "Функция", "//", 
 
 
 def has_bsl_keywords(txt: str) -> bool:
-    """Check if text contains BSL code keywords in first 1000 chars."""
+    """Проверить, содержит ли текст BSL-ключевые слова (первые 1000 символов).
+
+    Просматривает первые 1000 символов строки на наличие ключевых слов BSL:
+    ``Процедура``, ``Функция``, ``//`` (однострочный комментарий),
+    ``Возврат``, ``Если``.
+
+    Args:
+        txt: Текст для проверки (например, содержимое текстового блоба
+             формы или модуля).
+
+    Returns:
+        ``True``, если хотя бы одно ключевое слово найдено в первых 1000
+        символах. Иначе ``False``.
+
+    Example:
+        >>> has_bsl_keywords("Показать = Ложь;")
+        False
+        >>> has_bsl_keywords("Процедура ПриОткрытии()\n// комментарий")
+        True
+    """
     return any(kw in txt[:1000] for kw in _BSL_KEYWORDS)
 
 
 def extract_name_from_code(code: str) -> tuple[str | None, str | None]:
-    """Try to get module name from code content.
+    """Извлечь имя модуля из текстового содержимого блоба.
 
-    Looks for:
-      - Inter-module calls like ModuleName.Function()
-      - Function/procedure signatures that look like module names
-      - Quoted CamelCase strings (Cyrillic or Latin)
+    Анализирует исходный код (BSL) и пытается определить имя модуля
+    или обработки. Использует несколько эвристик в порядке убывания
+    приоритета:
+
+    1. **OneScript-путь** — строка вида ``// OneScript: .../Name.os``
+    2. **Кавычные CamelCase-строки** — строки в кавычках, начинающиеся
+       с заглавной буквы, длиной 4–60 символов, исключая стоп-слова.
+    3. **Имена процедур/функций** — первое объявление ``Процедура X(``
+       или ``Функция X(``.
+
+    Args:
+        code: Исходный код на BSL (1С). Может быть фрагментом или
+              полным текстом модуля.
+
+    Returns:
+        Кортеж ``(имя_модуля, имя_обработки)``. В текущей реализации
+        второй элемент всегда ``None``, первый может содержать
+        предполагаемое имя модуля или ``None``, если определить не
+        удалось.
+
+    Note:
+        Эвристики неточные и могут давать ложные срабатывания для
+        коротких строк на латинице. Для точного определения имени
+        рекомендуется использовать метаданные из блоба config.
+
+    Example:
+        >>> extract_name_from_code('"ОткрытьФайл"')
+        ('ОткрытьФайл', None)
+        >>> extract_name_from_code('Процедура ТестоваяПроцедура()')
+        ('ТестоваяПроцедура', None)
+        >>> extract_name_from_code('x = 1;')
+        (None, None)
     """
     path_match = re.search(r"//\s*OneScript:\s.*?/([\wА-Яа-яЁё]+)\.os", code)
     if path_match:
@@ -39,14 +98,20 @@ def extract_name_from_code(code: str) -> tuple[str | None, str | None]:
             if len(q) > 2 and not any(
                 skip in q.lower()
                 for skip in (
-                    "object", "error", "not found", "invalid",
-                    "формат", "значение", "параметр",
+                    "object",
+                    "error",
+                    "not found",
+                    "invalid",
+                    "формат",
+                    "значение",
+                    "параметр",
                 )
             ):
                 return q, None
 
     func_names = re.findall(
-        r"(?:Процедура|Функция)\s+([А-Яа-яЁёA-Z][\w]{4,60})\(", code,
+        r"(?:Процедура|Функция)\s+([А-Яа-яЁёA-Z][\w]{4,60})\(",
+        code,
     )
     if func_names:
         return func_names[0], None

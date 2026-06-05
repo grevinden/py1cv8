@@ -34,11 +34,25 @@ _base_url: str = "postgresql+psycopg2://postgres:qwaseD12@localhost:5433"
 
 
 def normalise_db_url(db_url: str) -> str:
-    """Нормализовать URL PostgreSQL.
+    """Нормализовать URL БД — привести краткие алиасы к полным SQLAlchemy URL.
 
-    Заменяет устаревший ``postgres://`` на ``postgresql://``.
+    >>> normalise_db_url("postgres://u:p@h/db")
+    'postgresql+psycopg2://u:p@h/db'
+    >>> normalise_db_url("mssql://u:p@h/db")
+    'mssql+pyodbc://u:p@h/db'
+    >>> normalise_db_url("postgresql+asyncpg://u:p@h/db")
+    'postgresql+asyncpg://u:p@h/db'
     """
-    return db_url.replace("postgres://", "postgresql://", 1)
+    # postgres:// → postgresql+psycopg2://
+    if db_url.startswith("postgres://"):
+        return db_url.replace("postgres://", "postgresql+psycopg2://", 1)
+    # postgresql:// (без драйвера) → postgresql+psycopg2://
+    if db_url.startswith("postgresql://"):
+        return db_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    # mssql:// (без драйвера) → mssql+pyodbc://
+    if db_url.startswith("mssql://"):
+        return db_url.replace("mssql://", "mssql+pyodbc://", 1)
+    return db_url
 
 
 def normalise_async_db_url(db_url: str) -> str:
@@ -61,10 +75,16 @@ def is_postgres_url(db_url: str) -> bool:
     return "postgresql" in db_url or "postgres" in db_url
 
 
+def is_mssql_url(db_url: str) -> bool:
+    """Проверить, указывает ли URL на MSSQL."""
+    return "mssql" in db_url
+
+
 def quote_ident(name: str, db_url: str) -> str:
     """Экранировать идентификатор для SQL.
 
     PostgreSQL — двойные кавычки, MSSQL — квадратные скобки.
+    Используется только там, где ORM не справляется с именами таблиц.
     """
     if is_postgres_url(db_url):
         return f'"{name}"'
@@ -128,7 +148,10 @@ def session_scope(dbname: str) -> Iterator[Session]:
 
 
 class PgDatabaseProvider:
-    """Синхронный read-only database provider (legacy)."""
+    """Синхронный read-only database provider (legacy).
+
+    Реализует :class:`py1cv8.protocols.DatabaseProvider`.
+    """
 
     def __init__(self, base_url: PostgresDsn | str) -> None:
         self._base_url = str(base_url).rstrip("/")
@@ -207,7 +230,10 @@ async def async_session_scope(dbname: str) -> AsyncIterator[AsyncSession]:
 
 
 class PgAsyncDatabaseProvider:
-    """Read-only async database provider через SQLAlchemy async."""
+    """Read-only async database provider через SQLAlchemy async.
+
+    Реализует :class:`py1cv8.protocols.AsyncDatabaseProvider`.
+    """
 
     def __init__(self, base_url: PostgresDsn | str) -> None:
         self._base_url = str(base_url).rstrip("/")

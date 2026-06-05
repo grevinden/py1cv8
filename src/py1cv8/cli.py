@@ -2,26 +2,117 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 import typer
 
 from py1cv8.agent_prompt import AGENT_PROMPT
 from py1cv8.db import normalise_db_url
-from py1cv8.output import print_json, print_text
+from py1cv8.mcp_server import main as run_mcp_server
+from py1cv8.output import print_json
 from py1cv8.sql.orm import ConfigTable
 
 app = typer.Typer(
     name="py1cv8",
     help="1C metadata parser + LLM context generator",
-    rich_markup_mode=None,
+    rich_markup_mode="markdown",
 )
 
 
 @app.command()
 def agent() -> None:
-    """Print LLM agent prompt — instructions for autonomous 1C analysis."""
-    print_text(AGENT_PROMPT)
+    """Показать промпт для LLM-агента — инструкции по автономному анализу 1С.
+
+    Выводит полный набор правил, команды и стратегии анализа, которые
+    нейросеть использует для работы с базой данных 1С через **py1cv8**.
+
+    **Содержание промпта:**
+    - Доступные команды (`context`, `describe`, `graph`, ...)
+    - Стратегия анализа связей между объектами
+    - Типичные ошибки и как их избежать
+    - Примеры рабочих процессов
+    - Ограничения и формат ответа пользователю
+    """
+    typer.echo(AGENT_PROMPT)
+
+
+@app.command()
+def mcp(
+    transport: Annotated[
+        str,
+        typer.Option(
+            "--transport",
+            "-t",
+            help="Транспорт: stdio (по умолч.) или sse (HTTP+SSE)",
+        ),
+    ] = "stdio",
+    host: Annotated[
+        str,
+        typer.Option(
+            "--host",
+            "-H",
+            help="Хост для SSE-транспорта",
+        ),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        typer.Option(
+            "--port",
+            "-p",
+            help="Порт для SSE-транспорта",
+        ),
+    ] = 8100,
+) -> None:
+    """Запустить MCP-сервер для интеграции с LLM-клиентами.
+
+    Сервер реализует **Model Context Protocol** — позволяет LLM (Claude Desktop,
+    VS Code, Copilot и др.) вызывать инструменты для анализа 1С-метаданных:
+    - `get_context` — полная карта метаданных
+    - `describe_object` — детальное описание объекта по UUID
+    - `find_objects` — поиск объектов по имени
+    - `get_graph` — граф связей объекта
+    - `run_sql` — read-only SQL-запросы
+    - `get_table_schema` — структура таблицы
+    - `resolve_uuid` — UUID → человекочитаемое имя
+    - `get_blob` — извлечение и декомпрессия блобов
+    - `compare_configs` — сравнение версий конфигурации
+
+    **Транспорты:**
+    - `stdio` (по умолчанию) — для Claude Desktop, VS Code через локальный запуск
+    - `sse` (HTTP+SSE) — для удалённого подключения, веб-клиентов, Docker
+
+    **Примеры:**
+    ```bash
+    python -m py1cv8 mcp                                    # stdio
+    python -m py1cv8 mcp --transport sse --port 8100        # SSE+HTTP
+    python -m py1cv8 mcp -t sse -H 0.0.0.0 -p 8100          # на всех интерфейсах
+    ```
+
+    **Подключение (stdio):**
+    ```json
+    {
+      "mcpServers": {
+        "py1cv8": {
+          "command": "python",
+          "args": ["-m", "py1cv8", "mcp"]
+        }
+      }
+    }
+    ```
+
+    **Подключение (SSE):**
+    ```json
+    {
+      "mcpServers": {
+        "py1cv8": {
+          "url": "http://localhost:8100/sse"
+        }
+      }
+    }
+    ```
+    """
+    asyncio.run(run_mcp_server(transport=transport, host=host, port=port))
 
 
 @app.command()
@@ -42,12 +133,25 @@ def context(
         bool,
         typer.Option("--pretty", "-p", help="Pretty-print JSON output"),
     ] = False,
+    table: Annotated[
+        str,
+        typer.Option(
+            "--table", "-t", help="Source table: config (default), configcas, or configsave"
+        ),
+    ] = "config",
 ) -> None:
-    """Print LLM-friendly context from 1C metadata."""
+    """Print LLM-friendly context from 1C metadata.
+
+    Parameters
+    ----------
+    table : str
+        Таблица-источник метаданных: config (текущая конфигурация),
+        configcas (кэш), configsave (предыдущая версия).
+    """
     db_url = normalise_db_url(db_url)
     from py1cv8.context import build_llm_context
 
-    ctx = build_llm_context(db_url)
+    ctx = build_llm_context(db_url, table=table)
     if with_tables:
         ctx["objects"] = [o for o in ctx["objects"] if o.get("table_name")]
         ctx["object_count"] = len(ctx["objects"])
@@ -73,7 +177,20 @@ def sql(
         typer.Option("--pretty", "-p", help="Pretty-print JSON output"),
     ] = False,
 ) -> None:
-    """Execute a read-only SQL query and print results as JSON."""
+    """Выполнить read-only SQL-запрос и вывести результат как JSON.
+
+    Поддерживаются только **SELECT**, **EXPLAIN** и **WITH** —
+    любые модифицирующие запросы блокируются.
+
+    **Важно:** таблицы 1С имеют технические имена (`_Reference53`,
+    `_Document209`, `_InfoRg148`). Используй `context` или `tables`,
+    чтобы узнать соответствие tech_name → table_name.
+
+    **Особенности:**
+    - Результат возвращается как **JSON-массив** строк
+    - UUID и `_IDRRef` конвертируются в hex-строки
+    - При ошибке показывает человекочитаемое сообщение без traceback
+    """
     db_url = normalise_db_url(db_url)
     from py1cv8.sql_proxy import ReadOnlyError, execute_readonly
 
@@ -100,7 +217,9 @@ async def blob(
     ],
     table: Annotated[
         ConfigTable,
-        typer.Option("--table", "-t", help="Source table: config or configcas"),
+        typer.Option(
+            "--table", "-t", help="Source table: config (default), configcas, or configsave"
+        ),
     ] = "config",
     uuid: Annotated[
         str | None,
@@ -131,7 +250,20 @@ async def blob(
         typer.Option("--pretty", "-p", help="Pretty-print JSON"),
     ] = False,
 ) -> None:
-    """Fetch and decompress config blobs — inspect raw metadata format."""
+    """Извлечь и декомпрессировать блобы конфигурации 1С.
+
+    Читает бинарные блобы из таблиц `config`, `configcas` или `configsave`,
+    распаковывает zlib-сжатые данные и парсит метаданные 1С.
+
+    **Режимы вывода:**
+    - Без `--raw` — мета-информация: размеры, категория, распарсенные поля
+    - С `--raw` — полное содержимое блоба в bracket-формате (+ ~50KB на строку)
+
+    **Источники данных (--table):**
+    - `config` — текущая конфигурация (по умолчанию)
+    - `configcas` — кэш метаданных
+    - `configsave` — предыдущая версия (до применения изменений)
+    """
     db_url = normalise_db_url(db_url)
     from py1cv8.blob_fetch import BLOB_FORMAT_DESCRIPTION, extract_metadata_blobs
 
@@ -174,7 +306,23 @@ def find(
         typer.Option("--pretty", "-p", help="Pretty-print JSON output"),
     ] = False,
 ) -> None:
-    """Search metadata objects by name (tech_name / display_name)."""
+    """Найти объекты метаданных по имени.
+
+    Ищет по `tech_name` (техническое имя) и `display_names`
+    (человекочитаемые имена на разных языках).
+
+    **Алгоритм:**
+    1. Сначала точное совпадение подстроки (case-insensitive)
+    2. Потом fuzzy-поиск (похожие имена)
+    3. Результаты сортируются по релевантности
+
+    **Типичное использование:**
+    ```
+    py1cv8 find <db_url> Контрагенты
+    py1cv8 find <db_url> модуль
+    py1cv8 find <db_url> обработка
+    ```
+    """
     db_url = normalise_db_url(db_url)
     from py1cv8.find_objects import find_objects
 
@@ -201,7 +349,19 @@ def schema(
         typer.Option("--pretty", help="Pretty-print JSON"),
     ] = False,
 ) -> None:
-    """Describe table structure via information_schema."""
+    """Показать структуру таблицы через **information_schema**.
+
+    Выводит список колонок с их типами данных, длиной, nullable,
+    и прочими атрибутами из `information_schema.columns`.
+
+    **Если таблица не найдена** — показывает похожие имена
+    (например, `_Reference53` вместо `Reference53`).
+
+    **Пример:**
+    ```
+    py1cv8 schema <db_url> _Reference53
+    ```
+    """
     db_url = normalise_db_url(db_url)
     from py1cv8.schema_describe import describe_table
 
@@ -236,7 +396,23 @@ def resolve(
         typer.Option("--json", hidden=True, help="Output as JSON (default)"),
     ] = False,
 ) -> None:
-    """Resolve UUID to _Description / _Code from 1C tables."""
+    """Преобразовать UUID в человекочитаемое имя (_Description / _Code).
+
+    Ищет UUID в метаданных конфигурации и во всех таблицах данных,
+    возвращая найденные `_Description`, `_Code` и другую информацию.
+
+    **Форматы UUID:**
+    - Полный: `550e8400-e29b-41d4-a716-446655440000`
+    - Без дефисов: `550e8400e29b41d4a716446655440000`
+    - Частичный (последние 12 символов): `446655440000`
+
+    **Примеры:**
+    ```
+    py1cv8 resolve <db_url> 550e8400-e29b-41d4-a716-446655440000
+    py1cv8 resolve <db_url> 446655440000
+    py1cv8 resolve <db_url> 550e8400... _Reference53
+    ```
+    """
     db_url = normalise_db_url(db_url)
     from py1cv8.resolve_uuid import resolve_uuid
 
@@ -271,7 +447,19 @@ async def describe(
         typer.Option("--no-blob", help="Skip raw blob content in output"),
     ] = False,
 ) -> None:
-    """Describe a 1C metadata object — context + schema + blob + sample data."""
+    """Полное описание объекта метаданных 1С по UUID.
+
+    Объединяет четыре источника в один читаемый отчёт:
+    - **Метаданные** — категория, type_num, display_names из `context`
+    - **Схема таблицы** — колонки с расшифровкой типов 1С
+    - **Sample data** — N строк данных с разрешением UUID-ссылок
+    - **Blob** — содержимое блоба конфигурации (можно отключить `--no-blob`)
+
+    **Флаги:**
+    - `-n` / `--sample-rows` — сколько строк sample data показать (по умолч. 3)
+    - `-r` / `--resolve` — разрешить UUID-ссылки в имена (_Description)
+    - `--no-blob` — не показывать сырой blob (ускоряет вывод)
+    """
     db_url = normalise_db_url(db_url)
     from py1cv8.describe_object import describe_text
 
@@ -282,7 +470,7 @@ async def describe(
         resolve_refs=resolve_refs,
         no_blob=no_blob,
     )
-    print_text(text)
+    typer.echo(text)
 
 
 @app.command()
@@ -308,7 +496,20 @@ def lookup(
         typer.Option("--pretty", "-p", help="Pretty-print JSON"),
     ] = False,
 ) -> None:
-    """Deep search UUID across ALL database tables with _idrref."""
+    """Глубокий поиск UUID по **всем** таблицам базы данных.
+
+    В отличие от `resolve`, который ищет только в метаданных и
+    стандартных таблицах, `lookup` сканирует **каждую** таблицу
+    с колонкой `_IDRRef` и ищет совпадение.
+
+    **Форматы UUID:**
+    - Полный: `550e8400-e29b-41d4-a716-446655440000`
+    - Без дефисов: `550e8400e29b41d4a716446655440000`
+    - Частичный: `446655440000` (последние 12 символов)
+
+    **Применение:** когда `resolve` не нашёл объект — `lookup`
+    проверит все таблицы, включая служебные.
+    """
     db_url = normalise_db_url(db_url)
     from py1cv8.lookup_uuid import lookup_uuid
 
@@ -335,7 +536,20 @@ def tables(
         typer.Option("--pretty", "-p", help="Pretty-print JSON"),
     ] = False,
 ) -> None:
-    """Show mapping: tech_name -> physical table name for all objects."""
+    """Маппинг tech_name → физическая таблица для всех объектов.
+
+    Показывает какие объекты метаданных имеют физические таблицы
+    в базе данных и как они называются.
+
+    **Флаг `-t` / `--with-table`:** показывает только те объекты,
+    у которых есть физическая таблица (отфильтровывает общие модули,
+    обработки и другие объекты без таблиц).
+
+    **Пример вывода:**
+    ```
+    {"tech_name": "Справочник.Контрагенты", "table_name": "_Reference53"}
+    ```
+    """
     db_url = normalise_db_url(db_url)
     from py1cv8.list_tables import list_tables
 
@@ -376,9 +590,22 @@ async def graph(
         typer.Option("--all", "-a", help="Show graph for ALL objects"),
     ] = False,
 ) -> None:
-    """Show relationship graph for a 1C object — refs, owners, parents.
+    """Граф связей объекта метаданных 1С.
 
-    Use --all to see relationships for every object at once.
+    Показывает одним вызовом:
+    - **Владелец (Owner)** — кто владеет объектом
+    - **Родитель (Parent)** — иерархический родитель
+    - **Поля-ссылки** — `_fld{N}rref`/`_rtref` с именами полей
+    - **Цели ссылок** — разрешённые UUID → имена таблиц + tech_name
+    - **Тип-дискриминаторы** — значения `_type` колонок
+    - **Обратные ссылки** — какие объекты ссылаются на этот
+
+    **Формат вывода:**
+    - `-j` / `--json` — сырой JSON для машинной обработки
+    - `-m` / `--mermaid` — Mermaid classDiagram для Markdown
+    - Без флагов — человекочитаемый текст
+
+    **Для всей базы:** используй `--all` / `-a`
     """
     db_url = normalise_db_url(db_url)
     from py1cv8.graph import (
@@ -391,22 +618,22 @@ async def graph(
 
     if all_flag:
         if mermaid_output:
-            print_text(await graph_all_mermaid(db_url))
+            typer.echo(await graph_all_mermaid(db_url))
         elif json_output:
             from py1cv8.graph import build_global_graph
 
             print_json(await build_global_graph(db_url), pretty=pretty)
         else:
-            print_text(await graph_all_text(db_url))
+            typer.echo(await graph_all_text(db_url))
     elif not uuid:
         typer.echo("Error: provide a UUID or use --all", err=True)
         raise typer.Exit(1)
     elif mermaid_output:
-        print_text(await graph_mermaid(db_url, uuid))
+        typer.echo(await graph_mermaid(db_url, uuid))
     elif json_output:
         print_json(await build_graph(db_url, uuid), pretty=pretty)
     else:
-        print_text(await graph_text(db_url, uuid))
+        typer.echo(await graph_text(db_url, uuid))
 
 
 @app.command()
@@ -436,13 +663,27 @@ def translate(
         typer.Option("--pretty", "-p", help="Pretty-print JSON output"),
     ] = False,
 ) -> None:
-    """Translate 1C query language to SQL.
+    """Трансляция языка запросов 1С в SQL с подстановкой реальных имён таблиц.
 
-    Примеры::
+    Поддерживает:
+    - **SELECT**, **JOIN**, **UNION**, **CASE-WHEN**
+    - Группировка и агрегатные функции
+    - Даты: `ГОД`, `МЕСЯЦ`, `ДОБАВИТЬКДАТЕ`, `РАЗНОСТЬДАТ`, `ДАТАВРЕМЯ`
+    - Виртуальные таблицы: `Остатки`, `Обороты`, `СрезПоследних`
+    - Параметры: `&Имя` → `:Имя` (SQLAlchemy bind params)
+    - Вложенные запросы
 
-        py1cv8 translate "postgresql://..." "ВЫБРАТЬ Наименование ИЗ Справочник.Контрагенты"
+    **Режимы:**
+    - Без `--bsl` — чистый запрос 1С одной строкой
+    - С `--bsl` — BSL-код с `Запрос.Текст = "..."` (извлекает все запросы)
 
-        py1cv8 translate "postgresql://..." --bsl "Запрос.Текст = \"ВЫБРАТЬ 1\";"
+    **--dialect:** `postgresql` (по умолч.) или `mssql`
+
+    **Примеры:**
+    ```
+    py1cv8 translate <db_url> "ВЫБРАТЬ Наименование ИЗ Справочник.Контрагенты"
+    py1cv8 translate <db_url> --bsl "Запрос.Текст = \"ВЫБРАТЬ 1\";" --dialect mssql
+    ```
     """
     db_url = normalise_db_url(db_url)
     from dataclasses import asdict

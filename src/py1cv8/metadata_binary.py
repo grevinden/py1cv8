@@ -1,8 +1,11 @@
-"""Binary metadata parser for 1C config/configcas blobs.
+"""Парсер бинарных метаданных 1С из блобов config/configcas.
 
-- Parse {1,\n{type pattern from decompressed config blobs
-- Extract type_num from MOXCEL header
-- Build UUID -> metadata map from config table (via SQLAlchemy ORM)
+Модуль отвечает за извлечение структурированной информации из бинарных
+блобов конфигурации 1С:Enterprise. Поддерживает два формата — классический
+паттерн ``{1,\n{type`` и MOXCEL-заголовок. Предоставляет функции для
+синтаксического разбора отдельных блобов, извлечения type_num из заголовка
+configcas, а также построения полной карты UUID -> метаданные на основе
+таблицы config через SQLAlchemy ORM.
 """
 
 from __future__ import annotations
@@ -14,14 +17,14 @@ from typing import Any
 from sqlalchemy import select
 
 from py1cv8.blob.decompress import decode_blob_chunk, try_decompress
-from py1cv8.models import Config
+from py1cv8.sql.orm.models import Config, ConfigCas
 
 # ── Type map: type_num → category (from 1C binary config blobs) ────────────
 #
 # WARNING: type_num (0-99) is NOT globally consistent across 1C configurations.
 # The 1C platform assigns type_num per serialization format, which can vary
 # between databases. This mapping is valid for the MessageCenter DB.
-# For the test DB, see TYPE_NUM_REFERENCE in v8unpack_types.py.
+# For the test DB, see data/v8unpack_metadata_types.json (type_num_reference).
 #
 # These are BROAD categories for BSL extraction output folders, NOT 1C type IDs.
 
@@ -58,15 +61,31 @@ TYPE_MAP: dict[int, str] = {
 
 
 def parse_metadata_blob(txt: str) -> dict[str, Any] | None:
-    """Extract type number and technical name from serialized config metadata.
+    """Извлечение type_num, технического имени и отображаемых имён из
+    текстового представления сериализованного блоба метаданных 1С.
 
-    Expected pattern in text:
-      {1, 0, UUID, "TechName", {...localized names}, ...}
+    Ожидаемый паттерн во входном тексте::
 
-    The UUID is the object's own UUID found in the {1,0,UUID} pattern,
-    NOT the first UUID in the text (which is the type's UUID).
+        {1, 0, UUID, "TechName", {...localized names}, ...}
 
-    Returns dict with 'type_num', 'tech_name', 'display_names', or None.
+    UUID извлекается в первую очередь из паттерна ``{1,0,UUID}``
+    — это собственный UUID объекта метаданных. Если такой паттерн
+    не найден, используется первый UUID в тексте (но это может
+    быть UUID типа, а не объекта).
+
+    Техническое имя (tech_name) — это строка в кавычках, следующая
+    сразу за UUID. Имена, соответствующие шаблонам ``ОбщийМодуль123``,
+    ``Справочник456`` и т.п., отбрасываются как сгенерированные
+    автоматически.
+
+    Отображаемые имена извлекаются для языков ``ru``, ``en``, ``uk``.
+
+    Args:
+        txt: Текстовое содержимое декомпрессированного блоба метаданных.
+
+    Returns:
+        Словарь с ключами ``uuid``, ``tech_name``, ``display_names``,
+        ``type_num`` или None, если разбор не удался.
     """
     # Prefer UUID from {1,0,UUID} — the object's own identity
     obj_match = re.search(
@@ -155,7 +174,20 @@ def parse_metadata_blob(txt: str) -> dict[str, Any] | None:
 
 
 def extract_type_from_configcas_blob(dec: bytes) -> int | None:
-    """Extract metadata type from configcas blob header."""
+    """Извлечение type_num из бинарного заголовка configcas-блоба.
+
+    Поддерживает два формата:
+      1. MOXCEL-заголовок: байты ``MOXCEL\\x00\\x08\\x00\\x01\\x00\\xNN\\x00``,
+         где uint16 LE на позиции 11-12 содержит type_num.
+      2. Текстовый паттерн ``{1,\\n{N`` в первых 2000 байтах,
+         где N — число 0-99.
+
+    Args:
+        dec: Декомпрессированные бинарные данные блоба.
+
+    Returns:
+        Числовой type_num (0-99) или None, если определить не удалось.
+    """
     if dec[:6] == b"MOXCEL" and len(dec) >= 13:
         tn = struct.unpack("<H", dec[11:13])[0]
         if tn <= 99:
@@ -173,16 +205,35 @@ def extract_type_from_configcas_blob(dec: bytes) -> int | None:
 # ── Build metadata map from config table ───────────────────────────────────
 
 
-def build_metadata_map(dbname: str) -> dict[str, dict]:
+def build_metadata_map(
+    dbname: str,
+    table: str = "config",
+) -> dict[str, dict]:
     """Read config table metadata blobs via ORM and build UUID -> info map.
 
-    Calls get_session from db module directly (backward-compat).
+    Parameters
+    ----------
+    dbname : str
+        Имя базы данных.
+    table : str
+        Таблица-источник: ``"config"`` (текущая), ``"configcas"`` (кэш),
+        ``"configsave"`` (предыдущая версия).
     """
     from py1cv8.db import get_session
 
+    _table_model: dict[str, type[Any]] = {
+        "config": Config,
+        "configcas": ConfigCas,
+        "configsave": ConfigCas,  # та же структура
+    }
+    model_cls = _table_model.get(table)
+    if model_cls is None:
+        msg = f"Unknown table: {table!r}. Choose from: config, configcas, configsave"
+        raise ValueError(msg)
+
     session = get_session(dbname)
     try:
-        q = select(Config).order_by(Config.partno)
+        q = select(model_cls).order_by(model_cls.partno)
         rows = session.scalars(q).all()
     finally:
         session.close()
