@@ -1,18 +1,26 @@
-# Python
+# ── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
+*.egg
 *.egg-info/
-dist/
-build/
+*.whl
 .eggs/
 
-# Virtual environments
+# ── Build artifacts ─────────────────────────────────────────────────────────
+dist/
+build/
+*.patch
+*.cover
+*.orig
+*.bak
+
+# ── Virtual environments ────────────────────────────────────────────────────
 venv/
 .venv/
 env/
 
-# IDE (launch/debug configs are tracked)
+# ── IDE (launch/debug configs tracked explicitly) ───────────────────────────
 .vscode/*
 !.vscode/launch.json
 .idea/*
@@ -22,20 +30,30 @@ env/
 *.swp
 *.swo
 
-# OS
+# ── OS ──────────────────────────────────────────────────────────────────────
 Thumbs.db
 .DS_Store
 
-# Staff (research artifacts, not needed for the package)
-.staff/
-
-# Cache dirs
+# ── Cache dirs ──────────────────────────────────────────────────────────────
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
 
-# Binary form files in 1C export subdirectories
+# ── Research artifacts ──────────────────────────────────────────────────────
+.staff/
+
+# ── Temp / scratch ──────────────────────────────────────────────────────────
+Temp/
+
+# ── Binary form files in 1C export subdirectories ───────────────────────────
 *.bin
 
-# Runtime log files
+# ── Runtime logs ────────────────────────────────────────────────────────────
 unknown_types.log
+nul
+
+# ── Models (GGUF, torch, safetensors) ─────────────────────────────────────────
+models/
+*.gguf
+*.safetensors
+*.pt
