@@ -3,6 +3,9 @@ name: Build
 on:
   push:
     tags: ["v*"]
+    branches: ["production"]
+  release:
+    types: [published]
 
 jobs:
   build-windows:
