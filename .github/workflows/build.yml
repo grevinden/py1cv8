@@ -24,7 +24,7 @@ jobs:
               --include-module=charset_normalizer
               --include-windows-runtime-dlls=yes
               src/py1cv8
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             artifact: py1cv8-linux-x64
             nuitka-opts: >
               --onefile --lto=yes --output-filename=py1cv8-linux-x64
