@@ -2,63 +2,70 @@ name: Build
 
 on:
   push:
+    branches: ["main"]
     tags: ["v*"]
-    branches: ["production"]
   release:
     types: [published]
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - run: pip install nuitka zstandard
-      - run: pip install -e .
-      - name: Build with Nuitka (MSVC + LTO)
-        run: |
-          python -m nuitka --onefile --lto=yes --output-dir=dist --output-filename=py1cv8-win-x64.exe `
-            --python-flag="-m" --prefer-source-code `
-            --nofollow-import-to=mypy `
-            --include-module=psycopg2 `
-            --include-module=sqlalchemy.dialects.postgresql `
-            --include-module=pyodbc `
-            --include-module=charset_normalizer `
-            --include-windows-runtime-dlls=yes `
-            src/py1cv8
-      - uses: actions/upload-artifact@v4
-        with:
-          name: py1cv8-windows-x64
-          path: dist/py1cv8-win-x64.exe
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: py1cv8-win-x64.exe
+            nuitka-opts: >
+              --onefile --lto=yes --output-filename=py1cv8-win-x64.exe
+              --python-flag="-m" --prefer-source-code
+              --nofollow-import-to=mypy
+              --include-module=psycopg2
+              --include-module=sqlalchemy.dialects.postgresql
+              --include-module=pyodbc
+              --include-module=charset_normalizer
+              --include-windows-runtime-dlls=yes
+              src/py1cv8
+          - os: ubuntu-latest
+            artifact: py1cv8-linux-x64
+            nuitka-opts: >
+              --onefile --lto=yes --output-filename=py1cv8-linux-x64
+              --python-flag="-m" --prefer-source-code
+              --nofollow-import-to=mypy
+              --include-module=psycopg2
+              --include-module=sqlalchemy.dialects.postgresql
+              --include-windows-runtime-dlls=no
+              src/py1cv8
+          - os: macos-latest
+            artifact: py1cv8-mac-x64
+            nuitka-opts: >
+              --onefile --lto=yes --output-filename=py1cv8-mac-x64
+              --python-flag="-m" --prefer-source-code
+              --nofollow-import-to=mypy
+              --include-module=psycopg2
+              --include-module=sqlalchemy.dialects.postgresql
+              --include-windows-runtime-dlls=no
+              src/py1cv8
 
-  build-linux:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc patchelf
-      - run: pip install nuitka zstandard
-      - run: pip install -e .
-      - name: Build with Nuitka (gcc + LTO)
+      - name: Install deps
         run: |
-          python -m nuitka --onefile --lto=yes --output-dir=dist --output-filename=py1cv8-linux-x64 \
-            --python-flag="-m" --prefer-source-code \
-            --nofollow-import-to=mypy \
-            --include-module=psycopg2 \
-            --include-module=sqlalchemy.dialects.postgresql \
-            --include-windows-runtime-dlls=no \
-            src/py1cv8
+          python -m pip install --upgrade pip
+          pip install nuitka
+          pip install -e .
+      - name: Build with Nuitka
+        run: python -m nuitka ${{ matrix.nuitka-opts }}
       - uses: actions/upload-artifact@v4
         with:
-          name: py1cv8-linux-x64
-          path: dist/py1cv8-linux-x64
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
 
   release:
-    needs: [build-windows, build-linux]
+    needs: [build]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -68,6 +75,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            py1cv8-windows-x64/py1cv8-win-x64.exe
+            py1cv8-win-x64.exe/py1cv8-win-x64.exe
             py1cv8-linux-x64/py1cv8-linux-x64
+            py1cv8-mac-x64/py1cv8-mac-x64
           generate_release_notes: true
