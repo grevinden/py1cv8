@@ -34,7 +34,7 @@ src/py1cv8/
 ├── context.py           # Генератор LLM-контекста: метаданные + правила DBNames/schema
 ├── sql_proxy.py         # Read-only SQL endpoint для LLM (SELECT/EXPLAIN/WITH)
 ├── agent_prompt.py      # LLM agent prompt (выводится при py1cv8 без аргументов)
-├── cli.py               # CLI: agent | context | sql | blob | find | schema | resolve | describe | tables | graph
+├── cli.py               # CLI: agent | mcp | context | sql | blob | find | schema | resolve | describe | lookup | tables | graph | translate
 ├── json_encoder.py      # JSON-encoder: UUID/memoryview → hex-строка
 ├── output.py            # print_json / print_text (typer.echo — pipe-safe вывод)
 ├── find_objects.py      # find — поиск объектов по имени
