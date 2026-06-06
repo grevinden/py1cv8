@@ -2,10 +2,7 @@ name: Build
 
 on:
   push:
-    branches: ["main"]
     tags: ["v*"]
-  release:
-    types: [published]
 
 jobs:
   build:
@@ -15,7 +12,8 @@ jobs:
           - os: windows-latest
             artifact: py1cv8-win-x64.exe
             nuitka-opts: >
-              --onefile --lto=yes --output-filename=py1cv8-win-x64.exe
+              --onefile --output-dir=dist
+              --output-filename=py1cv8-win-x64.exe
               --python-flag="-m" --prefer-source-code
               --nofollow-import-to=mypy
               --include-module=psycopg2
@@ -27,7 +25,8 @@ jobs:
           - os: ubuntu-24.04
             artifact: py1cv8-linux-x64
             nuitka-opts: >
-              --onefile --lto=yes --output-filename=py1cv8-linux-x64
+              --onefile --output-dir=dist
+              --output-filename=py1cv8-linux-x64
               --python-flag="-m" --prefer-source-code
               --nofollow-import-to=mypy
               --include-module=psycopg2
@@ -37,7 +36,8 @@ jobs:
           - os: macos-latest
             artifact: py1cv8-mac-x64
             nuitka-opts: >
-              --onefile --lto=yes --output-filename=py1cv8-mac-x64
+              --onefile --output-dir=dist
+              --output-filename=py1cv8-mac-x64
               --python-flag="-m" --prefer-source-code
               --nofollow-import-to=mypy
               --include-module=psycopg2
@@ -78,4 +78,5 @@ jobs:
             py1cv8-win-x64.exe/py1cv8-win-x64.exe
             py1cv8-linux-x64/py1cv8-linux-x64
             py1cv8-mac-x64/py1cv8-mac-x64
+          prerelease: true
           generate_release_notes: true
