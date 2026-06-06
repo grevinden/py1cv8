@@ -16,7 +16,6 @@ dependencies = [
     "asyncpg>=0.31",
     "mcp>=1.27",
     "typer>=0.15",
-    "sitecustomize",
 ]
 
 [project.optional-dependencies]
@@ -67,9 +66,6 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
-
-[tool.uv.sources]
-sitecustomize = { git = "https://gitflic.ru/project/rav/sitecustomize.git" }
 
 [dependency-groups]
 dev = [
